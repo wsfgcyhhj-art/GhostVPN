@@ -10,28 +10,47 @@ from app.services.xui.client import XUIClient, XUIError
 
 
 @pytest.mark.asyncio
-async def test_xui_client_login_and_auto_relogin_on_401() -> None:
-    calls: list[str] = []
+async def test_xui_client_csrf_login_and_auto_relogin_on_401_403() -> None:
+    calls: list[tuple[str, str, str | None]] = []
+    csrf_counter = 0
     add_attempts = 0
 
     def handler(request: httpx.Request) -> httpx.Response:
-        nonlocal add_attempts
+        nonlocal csrf_counter, add_attempts
         path = request.url.path
-        calls.append(path)
+        method = request.method
+        csrf_hdr = request.headers.get("X-CSRF-Token")
+        calls.append((method, path, csrf_hdr))
 
-        if path.endswith("/login"):
+        if method == "GET" and path == "/secret/":
+            csrf_counter += 1
+            html_page = (
+                f'<!DOCTYPE html><html><head>'
+                f'<meta name="csrf-token" content="csrf_token_v{csrf_counter}">'
+                f'</head><body>Login</body></html>'
+            )
+            return httpx.Response(
+                200,
+                text=html_page,
+                headers={"content-type": "text/html; charset=utf-8"},
+            )
+
+        if method == "POST" and path.endswith("/login"):
+            assert csrf_hdr == f"csrf_token_v{csrf_counter}"
             return httpx.Response(
                 200,
                 json={"success": True, "msg": "logged in"},
                 headers={"content-type": "application/json"},
             )
 
-        if path.endswith("/panel/api/inbounds/addClient"):
+        if method == "POST" and path.endswith("/panel/api/inbounds/addClient"):
             add_attempts += 1
             if add_attempts == 1:
-                # Имитируем потерю сессии 3X-UI (401 Unauthorized)
-                return httpx.Response(401, text="Unauthorized")
+                assert csrf_hdr == "csrf_token_v1"
+                # Имитируем истечение CSRF / сессии 3X-UI (403 Forbidden)
+                return httpx.Response(403, text="Forbidden - CSRF invalid")
 
+            assert csrf_hdr == "csrf_token_v2"
             body: dict[str, Any] = json.loads(request.content.decode("utf-8"))
             assert body["id"] == 1
             parsed_settings = json.loads(body["settings"])
@@ -66,18 +85,28 @@ async def test_xui_client_login_and_auto_relogin_on_401() -> None:
             limit_ip=3,
         )
 
+    assert xui._csrf_token == "csrf_token_v2"
     assert calls == [
-        "/secret/login",
-        "/secret/panel/api/inbounds/addClient",
-        "/secret/login",
-        "/secret/panel/api/inbounds/addClient",
+        ("GET", "/secret/", None),
+        ("POST", "/secret/login", "csrf_token_v1"),
+        ("POST", "/secret/panel/api/inbounds/addClient", "csrf_token_v1"),
+        ("GET", "/secret/", None),
+        ("POST", "/secret/login", "csrf_token_v2"),
+        ("POST", "/secret/panel/api/inbounds/addClient", "csrf_token_v2"),
     ]
 
 
 @pytest.mark.asyncio
 async def test_xui_client_raises_on_unsuccessful_response() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/secret/":
+            return httpx.Response(
+                200,
+                text='<meta content="tok123" name="csrf-token">',
+                headers={"content-type": "text/html"},
+            )
         if request.url.path.endswith("/login"):
+            assert request.headers.get("X-CSRF-Token") == "tok123"
             return httpx.Response(
                 200,
                 json={"success": False, "msg": "Invalid credentials"},

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -9,6 +10,12 @@ import httpx
 
 from app.core.logging import logger
 from app.db.models import Server
+
+CSRF_META_RE = re.compile(
+    r"""<meta[^>]+name=["']csrf-token["'][^>]+content=["']([^"']+)["']"""
+    r"""|<meta[^>]+content=["']([^"']+)["'][^>]+name=["']csrf-token["']""",
+    re.IGNORECASE,
+)
 
 
 class XUIError(Exception):
@@ -28,7 +35,9 @@ class XUIServerStatus:
 class XUIClient:
     """
     Асинхронный клиент для панели 3X-UI (v3.11.0).
-    Поддерживает авторизацию по cookie, автоматический ре-логин при 401/403/потере сессии
+    Поддерживает парсинг CSRF-токена из `<meta name="csrf-token" content="...">` (`GET {base_path}/`),
+    передачу заголовка `X-CSRF-Token` во всех POST-запросах, авторизацию по cookie,
+    автоматический ре-логин со свежим CSRF-токеном при 401/403/потере сессии
     и корректную сериализацию JSON-строки `settings` для VLESS + XTLS-RPRX-Vision + Reality.
     """
 
@@ -50,6 +59,7 @@ class XUIClient:
         self.verify_ssl = verify_ssl
         self._lock = asyncio.Lock()
         self._logged_in = False
+        self._csrf_token: str = ""
         self._owns_client = http_client is None
         self._client = http_client or httpx.AsyncClient(
             verify=verify_ssl,
@@ -59,7 +69,10 @@ class XUIClient:
 
     @classmethod
     def from_server(
-        cls, server: Server, http_client: httpx.AsyncClient | None = None
+        cls,
+        server: Server,
+        timeout: float = 10.0,
+        http_client: httpx.AsyncClient | None = None,
     ) -> "XUIClient":
         return cls(
             host=server.host,
@@ -67,6 +80,7 @@ class XUIClient:
             username=server.username,
             password=server.password,
             verify_ssl=server.verify_ssl,
+            timeout=timeout,
             http_client=http_client,
         )
 
@@ -80,13 +94,51 @@ class XUIClient:
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
         await self.close()
 
+    @staticmethod
+    def extract_csrf_token(html_text: str) -> str:
+        match = CSRF_META_RE.search(html_text)
+        if not match:
+            return ""
+        return (match.group(1) or match.group(2) or "").strip()
+
+    async def _fetch_csrf_token(self) -> str:
+        """Выполняет GET {base_path}/ и извлекает <meta name="csrf-token" content="...">."""
+        url = f"{self.base_url}/"
+        try:
+            resp = await self._client.get(url)
+            resp.raise_for_status()
+            token = self.extract_csrf_token(resp.text)
+            if not token:
+                # Фоллбэк: если токен также пришёл в cookie (например, csrf_token / _csrf)
+                token = (
+                    resp.cookies.get("csrf_token")
+                    or resp.cookies.get("_csrf")
+                    or self._client.cookies.get("csrf_token")
+                    or ""
+                )
+            self._csrf_token = token
+            return self._csrf_token
+        except Exception as exc:
+            logger.debug("Не удалось получить CSRF-токен с %s: %s", url, exc)
+            self._csrf_token = ""
+            return ""
+
+    def _build_headers(self, method: str) -> dict[str, str]:
+        headers = {"Accept": "application/json"}
+        if method.upper() == "POST" and self._csrf_token:
+            headers["X-CSRF-Token"] = self._csrf_token
+        return headers
+
     async def login(self) -> None:
         async with self._lock:
+            await self._fetch_csrf_token()
             url = f"{self.base_url}/login"
+            headers = self._build_headers("POST")
             try:
                 resp = await self._client.post(
                     url,
                     data={"username": self.username, "password": self.password},
+                    headers=headers,
                 )
                 resp.raise_for_status()
                 data = resp.json()
@@ -99,7 +151,11 @@ class XUIClient:
                 raise XUIError(f"3X-UI отклонил логин: {data.get('msg', 'unknown error')}")
 
             self._logged_in = True
-            logger.debug("Успешный вход в панель 3X-UI (%s)", self.base_url)
+            logger.debug(
+                "Успешный вход в панель 3X-UI (%s, csrf=%s)",
+                self.base_url,
+                bool(self._csrf_token),
+            )
 
     async def _request(
         self,
@@ -113,22 +169,27 @@ class XUIClient:
             await self.login()
 
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
+        headers = self._build_headers(method)
         try:
             resp = await self._client.request(
                 method=method,
                 url=url,
                 json=json_body,
-                headers={"Accept": "application/json"},
+                headers=headers,
             )
         except httpx.HTTPError as exc:
             raise XUIError(f"Сетевая ошибка при обращении к 3X-UI ({url}): {exc}") from exc
 
-        # Если сессия истекла, 3X-UI может вернуть 401/403/404 или редирект на HTML страницу логина
+        # Если сессия или CSRF-токен истекли (401 / 403 / редирект на HTML страницу логина)
         content_type = resp.headers.get("content-type", "")
         if resp.status_code in (401, 403) or "application/json" not in content_type.lower():
             if retry_auth:
-                logger.info("Сессия 3X-UI истекла (status=%s), выполняем повторный вход", resp.status_code)
+                logger.info(
+                    "Сессия/CSRF 3X-UI истекли (status=%s), обновляем CSRF-токен и выполняем повторный вход",
+                    resp.status_code,
+                )
                 self._logged_in = False
+                self._csrf_token = ""
                 await self.login()
                 return await self._request(
                     method, endpoint, json_body=json_body, retry_auth=False
