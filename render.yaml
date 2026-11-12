@@ -1,0 +1,59 @@
+services:
+  - type: web
+    name: ghostvpn-bot
+    runtime: python
+    plan: free
+    region: frankfurt
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt && alembic upgrade head
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: LOG_LEVEL
+        value: INFO
+      - key: BOT_TOKEN
+        sync: false
+      - key: BOT_USERNAME
+        sync: false
+      - key: WEBHOOK_BASE_URL
+        sync: false
+      - key: WEBHOOK_SECRET
+        generateValue: true
+      - key: SUPPORT_URL
+        value: https://t.me/your_support
+      - key: TERMS_URL
+        value: https://telegra.ph/Terms-of-Service-GhostVPN-01-01
+      - key: ADMIN_IDS
+        sync: false
+      - key: ADMIN_CHAT_ID
+        sync: false
+      - key: REQUIRED_CHANNEL_ID
+        sync: false
+      - key: REQUIRED_CHANNEL_URL
+        value: https://t.me/your_channel
+      - key: DATABASE_URL
+        sync: false
+      - key: XUI_HOST
+        sync: false
+      - key: XUI_WEB_BASE_PATH
+        sync: false
+      - key: XUI_USERNAME
+        sync: false
+      - key: XUI_PASSWORD
+        sync: false
+      - key: XUI_INBOUND_ID
+        value: "1"
+      - key: XUI_SUB_BASE_URL
+        sync: false
+      - key: XUI_VERIFY_SSL
+        value: "True"
+      - key: XUI_SERVER_NAME
+        value: "🇳🇱 Нидерланды (VLESS Reality)"
+      - key: STARS_RUB_RATE
+        value: "1.8"
+      - key: CRYPTOBOT_API_TOKEN
+        sync: false
+      - key: RUB_GATEWAY_WEBHOOK_SECRET
+        generateValue: true

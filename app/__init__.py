@@ -1,0 +1,1 @@
+"""GhostVPN package."""
