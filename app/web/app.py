@@ -165,8 +165,8 @@ app = FastAPI(
 )
 
 
-@app.get("/health")
-@app.get("/ping")
+@app.api_route("/health", methods=["GET", "HEAD"])
+@app.api_route("/ping", methods=["GET", "HEAD"])
 async def health_check(session: AsyncSession = Depends(get_db_session)) -> JSONResponse:
     """Эндпоинт для анти-сна Render (каждые 10 мин) с проверкой соединения БД."""
     db_ok = False

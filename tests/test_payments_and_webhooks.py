@@ -55,13 +55,19 @@ async def test_web_endpoints_health_deep_links_and_cryptobot_webhook(
     transport = ASGITransport(app=app)
 
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        # 1. Проверка /health и /ping
+        # 1. Проверка /health и /ping (GET и HEAD для UptimeRobot)
         resp_health = await client.get("/health")
         assert resp_health.status_code == 200
         assert resp_health.json()["status"] == "ok"
 
         resp_ping = await client.get("/ping")
         assert resp_ping.status_code == 200
+
+        resp_head_health = await client.head("/health")
+        assert resp_head_health.status_code == 200
+
+        resp_head_ping = await client.head("/ping")
+        assert resp_head_ping.status_code == 200
 
         # 2. Проверка Deep Link редирект-страницы /connect/{app}/{sub_id}
         resp_connect = await client.get("/connect/happ/abc123def4567890")
