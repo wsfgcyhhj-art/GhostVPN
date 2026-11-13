@@ -62,13 +62,11 @@ class Settings(BaseSettings):
     CRYPTOBOT_API_URL: str = Field(default="https://pay.crypt.bot/api")
     CRYPTOBOT_FIAT_CURRENCY: str = Field(default="RUB")
 
-    # --- Platega / P2P RUB Gateway (СБП и карты РФ без ИП) ---
-    PLATEGA_MERCHANT_ID: str = Field(default="")
-    PLATEGA_API_KEY: str = Field(default="")
-    PLATEGA_API_URL: str = Field(default="https://app.platega.io/api/v1")
-    RUB_GATEWAY_SHOP_ID: str = Field(default="")
-    RUB_GATEWAY_SECRET_KEY: str = Field(default="")
-    RUB_GATEWAY_WEBHOOK_SECRET: str = Field(default="rub_webhook_secret_key")
+    # --- FreeKassa SCI (СБП и карты РФ) ---
+    FREEKASSA_MERCHANT_ID: str = Field(default="")
+    FREEKASSA_SECRET_1: str = Field(default="")
+    FREEKASSA_SECRET_2: str = Field(default="freekassa_secret_2_placeholder")
+    FREEKASSA_SCI_URL: str = Field(default="https://pay.fk.money/")
 
     # --- Anti-Fraud Rate Limit ---
     RATE_LIMIT_MIN_INTERVAL_SEC: float = Field(default=0.35)

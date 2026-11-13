@@ -462,19 +462,41 @@ class VPNService:
            начисляет 15% рефереру и переводит транзакцию в PAID_PENDING_PROVISION.
         3) Вызывает 3X-UI для выдачи/продления подписки или добавления слота устройства.
         """
+        locked_tx_res = await self.session.execute(
+            select(Transaction).where(Transaction.id == tx.id).with_for_update()
+        )
+        tx = locked_tx_res.scalar_one()
+
         if tx.status == TransactionStatus.COMPLETED:
             res = await self.session.execute(
                 select(Subscription).where(Subscription.user_id == tx.user_id)
             )
             return True, res.scalar_one_or_none()
 
-        user = tx.user or await self.session.get(User, tx.user_id)
+        locked_user_res = await self.session.execute(
+            select(User).where(User.id == tx.user_id).with_for_update()
+        )
+        user = locked_user_res.scalar_one_or_none()
         plan: Plan | None = tx.plan
         if plan is None and tx.plan_id is not None:
             plan = await self.session.get(Plan, tx.plan_id)
 
         if user is None:
             raise RuntimeError(f"Транзакция #{tx.id} ссылается на несуществующего пользователя")
+
+        # Защита от гонки (race condition) при повторной оплате триала
+        if (
+            tx.tx_type == TransactionType.TRIAL
+            and tx.status == TransactionStatus.PENDING
+            and user.has_used_trial
+        ):
+            tx.status = TransactionStatus.COMPLETED
+            tx.paid_at = utcnow()
+            await self.session.commit()
+            res = await self.session.execute(
+                select(Subscription).where(Subscription.user_id == user.id)
+            )
+            return True, res.scalar_one_or_none()
 
         first_time_paid = tx.status == TransactionStatus.PENDING
         referrer_bonus = Decimal("0.00")
@@ -483,6 +505,8 @@ class VPNService:
         if first_time_paid:
             tx.status = TransactionStatus.PAID_PENDING_PROVISION
             tx.paid_at = utcnow()
+            if tx.tx_type == TransactionType.TRIAL:
+                user.has_used_trial = True
 
             if tx.balance_used_rub > Decimal("0.00"):
                 user.balance_rub = max(

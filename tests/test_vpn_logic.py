@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.handlers.billing import calculate_checkout_amounts
-from app.bot.handlers.profile import generate_qr_bytes
+from app.services.qr_card import generate_branded_qr_card
 from app.db.models import (
     PaymentProviderType,
     PromoCode,
@@ -162,7 +162,12 @@ def test_checkout_amounts_and_in_memory_qr() -> None:
     assert to_pay == Decimal("130.00")
     assert used == Decimal("50.00")
 
-    qr_bytes = generate_qr_bytes("https://127.0.0.1:2096/sub/abcd1234efgh5678")
+    qr_bytes = generate_branded_qr_card(
+        subscription_url="https://127.0.0.1:2096/sub/abcd1234efgh5678",
+        sub_id="abcd1234efgh5678",
+        expires_str="25.12.2026 12:00 МСК",
+        limit_ip=3,
+    )
     assert qr_bytes.startswith(b"\x89PNG")
 
 

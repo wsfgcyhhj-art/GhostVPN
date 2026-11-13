@@ -280,7 +280,7 @@
     <div class="card-title">🔥 Тарифы и Продление</div>
     <div style="margin-bottom:10px;display:flex;gap:6px;">
       <select id="payProvider" style="width:100%;padding:10px;border-radius:10px;background:var(--bg-card-alt);color:#fff;border:1px solid var(--border-hud);font-weight:600;">
-        <option value="RUB_GATEWAY">💳 СБП / Карта РФ (Platega)</option>
+        <option value="RUB_GATEWAY">💳 СБП / Карта РФ (FreeKassa)</option>
         <option value="STARS">⭐️ Telegram Stars</option>
         <option value="CRYPTOBOT">💎 CryptoBot (USDT / TON)</option>
       </select>
@@ -412,17 +412,31 @@
         updateSubDisplay();
 
         const container = document.getElementById("plansContainer");
-        container.innerHTML = "";
+        container.textContent = "";
         (data.plans || []).forEach(p => {
           const row = document.createElement("div");
           row.className = "plan-item";
-          row.innerHTML = `
-            <div>
-              <div class="plan-name">⚡ ${p.name}</div>
-              <div class="plan-meta">${p.days} дней • Безлимит</div>
-            </div>
-            <button class="plan-buy" onclick="buyPlan(${p.id})">${p.price_rub} ₽</button>
-          `;
+
+          const infoDiv = document.createElement("div");
+          const nameDiv = document.createElement("div");
+          nameDiv.className = "plan-name";
+          nameDiv.textContent = `⚡ ${p.name}`;
+
+          const metaDiv = document.createElement("div");
+          metaDiv.className = "plan-meta";
+          metaDiv.textContent = `${p.days} дней • Безлимит`;
+
+          infoDiv.appendChild(nameDiv);
+          infoDiv.appendChild(metaDiv);
+
+          const buyBtn = document.createElement("button");
+          buyBtn.className = "plan-buy";
+          buyBtn.type = "button";
+          buyBtn.textContent = `${p.price_rub} ₽`;
+          buyBtn.addEventListener("click", () => buyPlan(Number(p.id)));
+
+          row.appendChild(infoDiv);
+          row.appendChild(buyBtn);
           container.appendChild(row);
         });
       } catch (e) {

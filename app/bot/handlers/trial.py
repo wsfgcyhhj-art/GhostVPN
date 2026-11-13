@@ -5,6 +5,7 @@ from decimal import Decimal
 from aiogram import Bot, F, Router
 from aiogram.enums import ChatMemberStatus
 from aiogram.types import CallbackQuery, LabeledPrice
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.handlers.profile import format_subscription_card
@@ -25,7 +26,7 @@ from app.db.models import (
     User,
 )
 from app.db.repositories import Repository
-from app.services.payments.rub_gateway import PlategaProvider
+from app.services.payments.rub_gateway import FreeKassaProvider
 from app.services.vpn import VPNService
 
 router = Router(name="trial")
@@ -119,7 +120,27 @@ async def cb_trial_pay(
     repo: Repository,
     db_user: User,
 ) -> None:
+    locked_res = await session.execute(
+        select(User).where(User.id == db_user.id).with_for_update()
+    )
+    db_user = locked_res.scalar_one()
+
     if db_user.has_used_trial:
+        await callback.answer("Пробный период доступен только 1 раз.", show_alert=True)
+        return
+
+    paid_trial_res = await session.execute(
+        select(Transaction).where(
+            Transaction.user_id == db_user.id,
+            Transaction.tx_type == TransactionType.TRIAL,
+            Transaction.status.in_(
+                [TransactionStatus.COMPLETED, TransactionStatus.PAID_PENDING_PROVISION]
+            ),
+        )
+    )
+    if paid_trial_res.scalar_one_or_none() is not None:
+        db_user.has_used_trial = True
+        await session.commit()
         await callback.answer("Пробный период доступен только 1 раз.", show_alert=True)
         return
 
@@ -217,8 +238,8 @@ async def cb_trial_pay(
         await session.commit()
         await session.refresh(tx)
 
-        platega = PlategaProvider()
-        inv = await platega.create_invoice(
+        fk = FreeKassaProvider()
+        inv = await fk.create_invoice(
             transaction_id=tx.id,
             amount_rub=trial_rub,
             description=f"GhostVPN: Пробный доступ на {settings.TRIAL_DAYS} дня",

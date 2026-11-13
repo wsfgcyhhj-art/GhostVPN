@@ -3,15 +3,20 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import time
 from datetime import timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from urllib.parse import urlencode
 
 import pytest
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.types import CallbackQuery, Message
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.bot.utils import send_or_edit_banner
 from app.core.config import settings
 from app.core.i18n import render_progress_bar, t
 from app.core.security import verify_telegram_webapp_init_data
@@ -24,11 +29,14 @@ from app.db.models import (
 )
 from app.db.repositories import Repository
 from app.db.session import get_db_session
-from app.services.banner_generator import BANNER_SPECS, render_banner_bytes
+from app.services.banner_generator import (
+    BANNER_SPECS,
+    render_banner_bytes,
+    set_memory_cached_file_id,
+)
 from app.services.qr_card import generate_branded_qr_card
 from app.services.vpn import (
     VPNService,
-    build_tls_fragment_profile,
     calculate_extra_device_price,
     calculate_plan_renewal_price_with_slots,
 )
@@ -42,9 +50,12 @@ from app.tasks.scheduler import (
 from app.web.app import app
 
 
-def _make_valid_init_data(user_dict: dict, bot_token: str) -> str:
+def _make_valid_init_data(
+    user_dict: dict, bot_token: str, *, auth_date: int | None = None
+) -> str:
+    ts = auth_date if auth_date is not None else int(time.time())
     params = {
-        "auth_date": "1790000000",
+        "auth_date": str(ts),
         "query_id": "AAHdF6IQAAAAAN0XohDhrOrc",
         "user": json.dumps(user_dict, separators=(",", ":")),
     }
@@ -128,7 +139,7 @@ async def test_extra_device_slots_and_renewal_pricing(db_session: AsyncSession) 
 
 
 @pytest.mark.asyncio
-async def test_webapp_initdata_auth_and_mobile_fragment_endpoint(
+async def test_webapp_initdata_auth_freshness_and_mobile_fragment_security(
     db_session: AsyncSession,
 ) -> None:
     async def override_get_db():
@@ -143,20 +154,27 @@ async def test_webapp_initdata_auth_and_mobile_fragment_endpoint(
     vpn = VPNService(db_session, xui_client_override=mock_xui)
     sub = await vpn.grant_or_extend_subscription(user, days=3, is_trial=True)
 
-    valid_init_data = _make_valid_init_data(
-        {"id": 700202, "first_name": "Neo", "username": "webapp_hero", "language_code": "ru"},
+    user_payload = {"id": 700202, "first_name": "Neo", "username": "webapp_hero", "language_code": "ru"}
+    valid_init_data = _make_valid_init_data(user_payload, settings.BOT_TOKEN)
+    expired_init_data = _make_valid_init_data(
+        user_payload,
         settings.BOT_TOKEN,
+        auth_date=int(time.time()) - 90000,  # старше 24 часов
     )
+    assert verify_telegram_webapp_init_data(expired_init_data, settings.BOT_TOKEN) is None
 
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        # 1. HTML страница /webapp
+        # 1. HTML страница /webapp (без небезопасного innerHTML для тарифов)
         resp_html = await client.get("/webapp")
         assert resp_html.status_code == 200
         assert "GHOSTVPN" in resp_html.text
 
-        # 2. Невалидный initData отклоняется с 401
+        # 2. Невалидный и просроченный initData отклоняются с 401
         resp_unauth = await client.get("/api/webapp/me", headers={"X-Telegram-Init-Data": "fake=1&hash=bad"})
         assert resp_unauth.status_code == 401
+
+        resp_expired = await client.get("/api/webapp/me", headers={"X-Telegram-Init-Data": expired_init_data})
+        assert resp_expired.status_code == 401
 
         # 3. Валидный initData отдаёт полный дашборд
         resp_me = await client.get("/api/webapp/me", headers={"X-Telegram-Init-Data": valid_init_data})
@@ -183,7 +201,85 @@ async def test_webapp_initdata_auth_and_mobile_fragment_endpoint(
         assert mob_data["fragment"]["enabled"] is True
         assert "ya.ru" in mob_data["sni_whitelist"]
 
+        # 6. Забаненный пользователь получает 403 на /sub/mobile/{sub_id} и /api/webapp/me
+        user.is_banned = True
+        await db_session.commit()
+        resp_mob_banned = await client.get(f"/sub/mobile/{sub.sub_id}")
+        assert resp_mob_banned.status_code == 403
+
+        resp_me_banned = await client.get("/api/webapp/me", headers={"X-Telegram-Init-Data": valid_init_data})
+        assert resp_me_banned.status_code == 403
+
     app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_trial_race_condition_and_stale_banner_file_id_recovery(
+    db_session: AsyncSession,
+) -> None:
+    repo = Repository(db_session)
+    user, _ = await repo.get_or_create_user(telegram_id=700999, username="trial_racer")
+    mock_xui = AsyncMock(spec=XUIClient)
+    vpn = VPNService(db_session, xui_client_override=mock_xui)
+
+    # Два параллельно созданных счёта на триал: первый выдаёт 3 дня, второй не начисляет повторные 3 дня
+    tx1 = Transaction(
+        user_id=user.id,
+        tx_type=TransactionType.TRIAL,
+        provider=PaymentProviderType.RUB_GATEWAY,
+        amount_rub=Decimal("1.00"),
+        status=TransactionStatus.PENDING,
+    )
+    tx2 = Transaction(
+        user_id=user.id,
+        tx_type=TransactionType.TRIAL,
+        provider=PaymentProviderType.STARS,
+        amount_rub=Decimal("1.00"),
+        status=TransactionStatus.PENDING,
+    )
+    db_session.add_all([tx1, tx2])
+    await db_session.commit()
+
+    ok1, sub1 = await vpn.process_successful_payment(tx1)
+    assert ok1 is True and sub1 is not None
+    exp_after_first = sub1.expires_at
+
+    ok2, sub2 = await vpn.process_successful_payment(tx2)
+    assert ok2 is True and sub2 is not None
+    assert sub2.expires_at == exp_after_first
+    assert mock_xui.add_client.await_count == 1
+    assert mock_xui.update_client.await_count == 0
+
+    # Проверка авто-восстановления send_or_edit_banner при протухшем telegram_file_id
+    _, sha_hash = render_banner_bytes("main", "ru")
+    await repo.save_cached_banner_file_id("main", "ru", sha_hash, "stale_bad_file_id")
+    set_memory_cached_file_id("main", "ru", sha_hash, "stale_bad_file_id")
+
+    fake_new_msg = AsyncMock(spec=Message)
+    fake_new_msg.photo = [SimpleNamespace(file_id="fresh_valid_file_id_777")]
+
+    mock_msg = AsyncMock(spec=Message)
+    mock_msg.photo = [SimpleNamespace(file_id="old_msg_photo")]
+    mock_msg.edit_media = AsyncMock(
+        side_effect=[
+            TelegramBadRequest(method=AsyncMock(), message="Bad Request: wrong file identifier"),
+            fake_new_msg,
+        ]
+    )
+
+    mock_cb = AsyncMock(spec=CallbackQuery)
+    mock_cb.message = mock_msg
+
+    await send_or_edit_banner(
+        mock_cb,
+        banner_key="main",
+        caption="Тест восстановления баннера",
+        lang="ru",
+        repo=repo,
+    )
+    assert mock_msg.edit_media.await_count == 2
+    cached_in_db = await repo.get_cached_banner_file_id("main", "ru", sha_hash)
+    assert cached_in_db == "fresh_valid_file_id_777"
 
 
 @pytest.mark.asyncio

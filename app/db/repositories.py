@@ -228,6 +228,20 @@ class Repository:
             entry.telegram_file_id = telegram_file_id
         await self.session.commit()
 
+    async def delete_cached_banner_file_id(
+        self, banner_key: str, lang: str
+    ) -> None:
+        res = await self.session.execute(
+            select(MediaCache).where(
+                MediaCache.banner_key == banner_key,
+                MediaCache.lang == lang,
+            )
+        )
+        entry = res.scalar_one_or_none()
+        if entry is not None:
+            await self.session.delete(entry)
+            await self.session.commit()
+
     async def get_all_active_subscriptions(self) -> Sequence[Subscription]:
         now = utcnow()
         res = await self.session.execute(

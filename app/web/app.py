@@ -6,10 +6,11 @@ from contextlib import asynccontextmanager
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, AsyncGenerator
+from urllib.parse import parse_qsl
 
 from aiogram.types import LabeledPrice, Update
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy import select, text
@@ -22,8 +23,9 @@ from app.bot.utils import format_dt_msk
 from app.core.config import settings
 from app.core.logging import logger, send_admin_alert, setup_logging
 from app.core.security import (
+    format_fk_amount,
     verify_cryptobot_signature,
-    verify_rub_gateway_signature,
+    verify_freekassa_signature,
     verify_telegram_secret,
     verify_telegram_webapp_init_data,
 )
@@ -37,7 +39,7 @@ from app.db.models import (
 from app.db.repositories import Repository
 from app.db.session import engine, get_db_session, init_db_with_retry
 from app.services.payments.cryptobot import CryptoBotProvider
-from app.services.payments.rub_gateway import PlategaProvider
+from app.services.payments.rub_gateway import FreeKassaProvider
 from app.services.payments.stars import TelegramStarsProvider
 from app.services.vpn import (
     VPNService,
@@ -236,6 +238,9 @@ async def webapp_me(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Telegram initData")
 
     tg_user_data = verified["user"]
+    if "id" not in tg_user_data:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing user id in initData")
+
     tg_id = int(tg_user_data["id"])
     repo = Repository(session)
     user, _ = await repo.get_or_create_user(
@@ -244,6 +249,9 @@ async def webapp_me(
         full_name=f"{tg_user_data.get('first_name', '')} {tg_user_data.get('last_name', '')}".strip(),
         language_code=tg_user_data.get("language_code"),
     )
+    if user.is_banned:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Доступ ограничен администратором")
+
     sub = user.subscription
     plans = await repo.get_active_plans()
     extra_devs = sub.extra_devices if sub else 0
@@ -284,12 +292,14 @@ async def webapp_create_payment(
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
     verified = verify_telegram_webapp_init_data(x_telegram_init_data or "", settings.BOT_TOKEN)
-    if not verified or not isinstance(verified.get("user"), dict):
+    if not verified or not isinstance(verified.get("user"), dict) or "id" not in verified["user"]:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Telegram initData")
 
     tg_id = int(verified["user"]["id"])
     repo = Repository(session)
     user, _ = await repo.get_or_create_user(telegram_id=tg_id)
+    if user.is_banned:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Доступ ограничен администратором")
 
     if await repo.count_recent_pending_transactions(user.id, minutes=10) >= 5:
         raise HTTPException(status_code=429, detail="Слишком много неоплаченных счетов, подождите пару минут.")
@@ -298,9 +308,13 @@ async def webapp_create_payment(
     if plan is None or not plan.is_active:
         raise HTTPException(status_code=404, detail="Тариф не найден")
 
+    try:
+        provider_enum = PaymentProviderType(req.provider)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Неподдерживаемый метод оплаты") from exc
+
     extra_devs = user.subscription.extra_devices if user.subscription else 0
     to_pay_rub = calculate_plan_renewal_price_with_slots(plan, extra_devices=extra_devs)
-    provider_enum = PaymentProviderType(req.provider)
 
     tx = Transaction(
         user_id=user.id,
@@ -353,7 +367,7 @@ async def webapp_create_payment(
         await session.commit()
         return {"ok": True, "payment_url": inv.payment_url}
 
-    inv = await PlategaProvider().create_invoice(
+    inv = await FreeKassaProvider().create_invoice(
         transaction_id=tx.id,
         amount_rub=to_pay_rub,
         description=desc,
@@ -371,13 +385,20 @@ async def get_mobile_fragment_subscription(
     sub_id: str,
     session: AsyncSession = Depends(get_db_session),
 ) -> JSONResponse:
-    if not sub_id.isalnum() or len(sub_id) > 64:
+    if not sub_id.isalnum() or not (4 <= len(sub_id) <= 64):
         raise HTTPException(status_code=400, detail="Invalid sub_id")
 
     repo = Repository(session)
     sub = await repo.get_subscription_by_sub_id(sub_id)
     if sub is None:
         raise HTTPException(status_code=404, detail="Subscription not found")
+
+    user = sub.user or await session.get(User, sub.user_id)
+    if (user and user.is_banned) or not sub.is_currently_valid:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Subscription is inactive or user is banned",
+        )
 
     profile_json = build_tls_fragment_profile(sub)
     return JSONResponse(
@@ -431,15 +452,20 @@ async def cryptobot_webhook(
     invoice_id = str(invoice.get("invoice_id", ""))
     tx_payload = str(invoice.get("payload", ""))
 
-    stmt = select(Transaction).where(Transaction.external_id == invoice_id)
+    stmt = select(Transaction).where(Transaction.external_id == invoice_id).with_for_update()
     if tx_payload.isdigit():
-        stmt = select(Transaction).where(
-            (Transaction.external_id == invoice_id) | (Transaction.id == int(tx_payload))
+        stmt = (
+            select(Transaction)
+            .where((Transaction.external_id == invoice_id) | (Transaction.id == int(tx_payload)))
+            .with_for_update()
         )
     res = await session.execute(stmt)
     tx = res.scalar_one_or_none()
     if tx is None:
         logger.warning("CryptoBot webhook: транзакция для invoice_id=%s не найдена", invoice_id)
+        return {"ok": True}
+
+    if tx.status == TransactionStatus.COMPLETED:
         return {"ok": True}
 
     vpn_service = VPNService(session)
@@ -469,42 +495,89 @@ async def cryptobot_webhook(
     return {"ok": True}
 
 
-@app.post("/webhooks/rub_gateway")
+@app.post("/webhooks/rub_gateway", response_class=PlainTextResponse)
 async def rub_gateway_webhook(
     request: Request,
     session: AsyncSession = Depends(get_db_session),
-    x_gateway_signature: str | None = Header(default=None),
-) -> dict[str, bool]:
+) -> PlainTextResponse:
+    """
+    Обработчик уведомлений об оплате FreeKassa SCI.
+    Проверяет MD5-подпись `md5("{MERCHANT_ID}:{AMOUNT}:{SECRET_2}:{MERCHANT_ORDER_ID}")`,
+    сверяет сумму и идемпотентно активирует подписку / триал / слот с возвратом `PlainTextResponse("YES")`.
+    """
     raw_body = await request.body()
-    if not verify_rub_gateway_signature(
-        raw_body, x_gateway_signature, settings.RUB_GATEWAY_WEBHOOK_SECRET
+    content_type = request.headers.get("content-type", "").lower()
+
+    data: dict[str, Any] = dict(request.query_params)
+    if raw_body:
+        body_str = raw_body.decode("utf-8", errors="ignore").strip()
+        if "application/json" in content_type or body_str.startswith("{"):
+            try:
+                parsed_json = json.loads(body_str)
+                if isinstance(parsed_json, dict):
+                    data.update(parsed_json)
+            except Exception:
+                pass
+        else:
+            data.update(dict(parse_qsl(body_str, keep_blank_values=True)))
+
+    merchant_id = str(data.get("MERCHANT_ID") or data.get("merchant_id") or "")
+    amount_raw = str(data.get("AMOUNT") or data.get("amount") or "")
+    order_id = str(data.get("MERCHANT_ORDER_ID") or data.get("order_id") or "")
+    sign = str(data.get("SIGN") or data.get("sign") or "")
+    fk_intid = str(data.get("intid") or "")
+
+    if not verify_freekassa_signature(
+        merchant_id=merchant_id,
+        amount_str=amount_raw,
+        order_id=order_id,
+        signature=sign,
+        secret_2=settings.FREEKASSA_SECRET_2,
     ):
         await send_admin_alert(
             bot,
-            "⚠️ Отклонён вебхук рублёвого шлюза (Platega) с невалидной подписью!",
+            f"⚠️ Отклонён вебхук FreeKassa с невалидной MD5-подписью (order={order_id})!",
             critical=True,
         )
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid signature")
 
-    data: dict[str, Any] = json.loads(raw_body.decode("utf-8"))
-    st = str(data.get("status", "")).lower()
-    if st not in ("succeeded", "paid", "confirmed", "completed"):
-        return {"ok": True}
+    if not order_id.isdigit():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid order ID")
 
-    ext_id = str(data.get("external_id") or data.get("transactionId") or "")
-    tx_id_raw = data.get("transaction_id") or data.get("orderId")
-
-    stmt = select(Transaction).where(
-        Transaction.provider == PaymentProviderType.RUB_GATEWAY,
-        Transaction.external_id == ext_id,
+    stmt = (
+        select(Transaction)
+        .where(
+            Transaction.id == int(order_id),
+            Transaction.provider == PaymentProviderType.RUB_GATEWAY,
+        )
+        .with_for_update()
     )
-    if tx_id_raw and str(tx_id_raw).isdigit():
-        stmt = select(Transaction).where(Transaction.id == int(tx_id_raw))
-
     res = await session.execute(stmt)
     tx = res.scalar_one_or_none()
     if tx is None:
-        return {"ok": True}
+        logger.warning("FreeKassa webhook: транзакция #%s не найдена", order_id)
+        return PlainTextResponse("YES")
+
+    try:
+        paid_dec = Decimal(format_fk_amount(amount_raw))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid amount") from exc
+
+    expected_dec = tx.amount_rub.quantize(Decimal("0.01"))
+    if paid_dec < expected_dec:
+        logger.error(
+            "FreeKassa webhook: сумма платежа (%s) меньше ожидаемой (%s) для tx #%s",
+            paid_dec,
+            expected_dec,
+            tx.id,
+        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Amount mismatch")
+
+    if tx.status == TransactionStatus.COMPLETED:
+        return PlainTextResponse("YES")
+
+    if fk_intid:
+        tx.external_id = f"fk_{fk_intid}"
 
     vpn_service = VPNService(session)
     ok, sub = await vpn_service.process_successful_payment(tx, bot=bot)
@@ -530,7 +603,7 @@ async def rub_gateway_webhook(
         except Exception:
             pass
 
-    return {"ok": True}
+    return PlainTextResponse("YES")
 
 
 @app.get("/connect/{app_name}/{sub_id}", response_class=HTMLResponse)
@@ -544,23 +617,31 @@ async def connect_deep_link(
     Генерирует HTML-страницу с авто-редиректом (`window.location.href`) в схему приложения
     (`happ://add/{sub_url}`, `v2raytun://import/{sub_url}`, `hiddify://import/{sub_url}`)
     и кнопкой ручного копирования Subscription URL.
-    Поддерживает параметр `?mode=mobile` для импорта профиля с TLS Fragment.
+    Выдаёт данные только для существующих, активных и не забаненных подписок.
     """
     app_key = app_name.lower().strip()
     if app_key not in DEEP_LINK_SCHEMES:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unsupported client app")
 
-    if not sub_id.isalnum() or len(sub_id) > 64:
+    if not sub_id.isalnum() or not (4 <= len(sub_id) <= 64):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid subscription ID")
 
     repo = Repository(session)
     sub = await repo.get_subscription_by_sub_id(sub_id)
+    if sub is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subscription not found")
+
+    user = sub.user or await session.get(User, sub.user_id)
+    if (user and user.is_banned) or not sub.is_currently_valid:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Subscription is inactive or user is banned",
+        )
+
     if mode == "mobile":
         sub_url = f"{settings.WEBHOOK_BASE_URL.rstrip('/')}/sub/mobile/{sub_id}"
-    elif sub is not None:
-        sub_url = sub.subscription_url
     else:
-        sub_url = f"{settings.XUI_SUB_BASE_URL.rstrip('/')}/{sub_id}"
+        sub_url = sub.subscription_url
 
     app_title, scheme_tpl = DEEP_LINK_SCHEMES[app_key]
     deep_link = scheme_tpl.format(sub_url=sub_url)

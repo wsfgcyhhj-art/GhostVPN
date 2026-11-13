@@ -108,7 +108,7 @@ async def build_dashboard_text(repo: Repository) -> str:
         f"• За 30 дней: <b>{stats['rev_month']} ₽</b>\n"
         f"• За всё время: <b>{stats['rev_total']} ₽</b>\n\n"
         f"💳 <b>Разбивка по шлюзам за 30 дней:</b>\n"
-        f"• СБП / Карты (Platega): <b>{stats['rev_rub_gw_30d']} ₽</b>\n"
+        f"• СБП / Карты (FreeKassa): <b>{stats['rev_rub_gw_30d']} ₽</b>\n"
         f"• CryptoBot: <b>{stats['rev_crypto_rub_30d']} ₽</b> (~<b>{usdt_est} USDT</b>)\n"
         f"• Telegram Stars: <b>{stats['rev_stars_rub_30d']} ₽</b> (~<b>{stars_est} ⭐️</b>)\n\n"
         f"🖥 <b>VPS 3X-UI ({server.name if server else 'N/A'}):</b>\n"

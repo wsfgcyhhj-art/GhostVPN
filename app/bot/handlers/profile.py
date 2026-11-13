@@ -80,16 +80,6 @@ async def format_subscription_card(
     )
 
 
-def generate_qr_bytes(data: str) -> bytes:
-    """Генерирует брендированную PNG QR-карточку Ghostface Edition в оперативной памяти (BytesIO)."""
-    return generate_branded_qr_card(
-        subscription_url=data,
-        sub_id=data.rstrip("/").split("/")[-1][:16],
-        expires_str="STEALTH ACTIVE",
-        limit_ip=settings.DEFAULT_LIMIT_IP,
-    )
-
-
 @router.callback_query(F.data == "profile:sub")
 async def cb_profile_sub(
     callback: CallbackQuery,

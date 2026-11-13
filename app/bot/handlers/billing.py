@@ -26,7 +26,7 @@ from app.db.models import (
 )
 from app.db.repositories import Repository
 from app.services.payments.cryptobot import CryptoBotError, CryptoBotProvider
-from app.services.payments.rub_gateway import PlategaProvider
+from app.services.payments.rub_gateway import FreeKassaProvider
 from app.services.payments.stars import TelegramStarsProvider
 from app.services.vpn import (
     VPNService,
@@ -379,7 +379,7 @@ async def cb_devices_pay(
         await callback.answer()
         return
 
-    inv = await PlategaProvider().create_invoice(
+    inv = await FreeKassaProvider().create_invoice(
         transaction_id=tx.id,
         amount_rub=price_rub,
         description=description,
@@ -524,7 +524,7 @@ async def cb_pay_create(
         return
 
     if provider_enum == PaymentProviderType.RUB_GATEWAY:
-        rub_provider = PlategaProvider()
+        rub_provider = FreeKassaProvider()
         inv = await rub_provider.create_invoice(
             transaction_id=tx.id,
             amount_rub=to_pay_rub,
@@ -606,7 +606,7 @@ async def cb_pay_check(
     if tx.provider == PaymentProviderType.CRYPTOBOT and tx.external_id:
         is_paid = await CryptoBotProvider().check_payment_status(tx.external_id)
     elif tx.provider == PaymentProviderType.RUB_GATEWAY and tx.external_id:
-        is_paid = await PlategaProvider().check_payment_status(tx.external_id)
+        is_paid = await FreeKassaProvider().check_payment_status(tx.external_id)
 
     if not is_paid:
         await callback.answer(

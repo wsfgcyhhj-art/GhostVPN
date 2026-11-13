@@ -23,7 +23,7 @@ from app.bot.handlers.profile import format_subscription_card
 from app.bot.keyboards.user import invoice_check_kb, subscription_card_kb
 from app.bot.utils import format_dt_msk, send_banner_to_chat
 from app.core.config import settings
-from app.core.logging import logger, send_admin_alert
+from app.core.logging import logger
 from app.db.models import (
     PaymentProviderType,
     Plan,
@@ -38,7 +38,7 @@ from app.db.models import (
 )
 from app.db.repositories import Repository
 from app.db.session import async_session_factory
-from app.services.payments.rub_gateway import PlategaProvider
+from app.services.payments.rub_gateway import FreeKassaProvider
 from app.services.vpn import VPNService, calculate_plan_renewal_price_with_slots
 from app.services.xui.client import XUIClient
 
@@ -195,7 +195,7 @@ async def check_expiring_and_expired_subscriptions(bot: Bot | None = None) -> di
                     session.add(tx)
                     await session.commit()
                     await session.refresh(tx)
-                    inv = await PlategaProvider().create_invoice(
+                    inv = await FreeKassaProvider().create_invoice(
                         transaction_id=tx.id,
                         amount_rub=to_pay,
                         description=f"GhostVPN: Автопродление {plan.name}",
@@ -747,15 +747,15 @@ async def create_and_send_database_backup(
                     f"ON CONFLICT (telegram_id) DO NOTHING;"
                 )
 
-            zip_buf = io.BytesIO()
-            with zipfile.ZipFile(zip_buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-                zf.writestr(
-                    "dump.json",
-                    json.dumps(dump_data, ensure_ascii=False, indent=2),
-                )
-                zf.writestr("dump.sql", "\n".join(sql_lines))
+            with io.BytesIO() as zip_buf:
+                with zipfile.ZipFile(zip_buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+                    zf.writestr(
+                        "dump.json",
+                        json.dumps(dump_data, ensure_ascii=False, indent=2),
+                    )
+                    zf.writestr("dump.sql", "\n".join(sql_lines))
 
-            zip_bytes = zip_buf.getvalue()
+                zip_bytes = zip_buf.getvalue()
 
     if bot is None:
         return True
