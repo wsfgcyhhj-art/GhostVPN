@@ -30,7 +30,11 @@ from app.db.models import (
 from app.db.repositories import Repository
 from app.db.session import get_db_session
 from app.services.banner_generator import (
+    BANNER_BG_PATH,
     BANNER_SPECS,
+    BANNER_TEMPLATE_VERSION,
+    FONT_BOLD_PATH,
+    FONT_REG_PATH,
     render_banner_bytes,
     set_memory_cached_file_id,
 )
@@ -67,6 +71,15 @@ def _make_valid_init_data(
 
 
 def test_banner_generator_all_9_sections_and_qr_card() -> None:
+    import io
+    from PIL import Image
+
+    assert BANNER_TEMPLATE_VERSION == "v3_flow_clean"
+    assert BANNER_BG_PATH.exists()
+    assert FONT_BOLD_PATH.exists()
+    assert FONT_REG_PATH.exists()
+    assert len(BANNER_SPECS) == 9
+
     for key in BANNER_SPECS:
         png_ru, hash_ru = render_banner_bytes(key, "ru")
         png_en, hash_en = render_banner_bytes(key, "en")
@@ -74,6 +87,9 @@ def test_banner_generator_all_9_sections_and_qr_card() -> None:
         assert png_en.startswith(b"\x89PNG")
         assert len(hash_ru) == 64
         assert hash_ru != hash_en
+
+        with Image.open(io.BytesIO(png_ru)) as im:
+            assert im.size == (1280, 640)
 
     card_bytes = generate_branded_qr_card(
         subscription_url="https://127.0.0.1:2096/sub/ghost1234567890",
