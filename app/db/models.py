@@ -19,6 +19,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from app.core.config import settings
 from app.db.base import Base
 
 
@@ -169,8 +170,20 @@ class Subscription(Base):
 
     @property
     def subscription_url(self) -> str:
-        base = self.server.sub_base_url.rstrip("/")
+        web_base = (settings.WEBHOOK_BASE_URL or "").strip().rstrip("/")
+        if web_base:
+            return f"{web_base}/sub/mobile/{self.sub_id}"
+        base = (
+            self.server.sub_base_url.rstrip("/")
+            if (self.server is not None and self.server.sub_base_url)
+            else settings.XUI_SUB_BASE_URL.rstrip("/")
+        )
         return f"{base}/{self.sub_id}"
+
+    @subscription_url.setter
+    def subscription_url(self, _value: str) -> None:
+        # Вычисляется динамически через build_subscription_url(self.sub_id)
+        pass
 
     @property
     def is_currently_valid(self) -> bool:

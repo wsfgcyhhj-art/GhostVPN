@@ -41,6 +41,7 @@ from app.services.banner_generator import (
 from app.services.qr_card import generate_branded_qr_card
 from app.services.vpn import (
     VPNService,
+    build_subscription_url,
     calculate_extra_device_price,
     calculate_plan_renewal_price_with_slots,
 )
@@ -481,6 +482,25 @@ async def test_dual_reality_inbounds_sync_and_mobile_multiprofile_formats(
                 assert "🇳🇱 GhostVPN • LTE Резерв (VK SNI + Fragment)" in decoded_uris
                 assert "pbk=PBK_PRIMARY_111" in decoded_uris
                 assert "pbk=PBK_RESERVE_222" in decoded_uris
+
+                # 5. Единая ссылка подписки {WEBHOOK_BASE_URL}/sub/mobile/{sub_id} везде по умолчанию
+                expected_unified = f"{settings.WEBHOOK_BASE_URL.rstrip('/')}/sub/mobile/{sub.sub_id}"
+                assert build_subscription_url(sub.sub_id, server=sub.server) == expected_unified
+                assert sub.subscription_url == expected_unified
+
+                for app_name in ("happ", "v2raytun", "hiddify"):
+                    resp_conn = await client.get(f"/connect/{app_name}/{sub.sub_id}")
+                    assert resp_conn.status_code == 200
+                    assert expected_unified in resp_conn.text
+
+                # Фоллбэк на XUI_SUB_BASE_URL, если WEBHOOK_BASE_URL пустой
+                old_wh = settings.WEBHOOK_BASE_URL
+                try:
+                    object.__setattr__(settings, "WEBHOOK_BASE_URL", "")
+                    assert build_subscription_url(sub.sub_id, server=sub.server).endswith(f"/{sub.sub_id}")
+                    assert "/sub/mobile/" not in build_subscription_url(sub.sub_id, server=sub.server)
+                finally:
+                    object.__setattr__(settings, "WEBHOOK_BASE_URL", old_wh)
     finally:
         object.__setattr__(settings, "XUI_MOBILE_INBOUND_ID", old_mob_id)
         app.dependency_overrides.clear()

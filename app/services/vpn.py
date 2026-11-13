@@ -47,6 +47,23 @@ def generate_sub_id(length: int = 16) -> str:
     return "".join(secrets.choice(ALPHABET) for _ in range(length))
 
 
+def build_subscription_url(sub_id: str, server: Server | None = None) -> str:
+    """
+    Возвращает единую универсальную мульти-подписку `{WEBHOOK_BASE_URL}/sub/mobile/{sub_id}`
+    (включающую оба Reality-профиля с Yandex/VK SNI и TLS Fragment для Wi-Fi и LTE).
+    Если `WEBHOOK_BASE_URL` пустой — возвращает запасной фоллбэк на прямую ссылку 3X-UI (`XUI_SUB_BASE_URL/{sub_id}`).
+    """
+    web_base = (settings.WEBHOOK_BASE_URL or "").strip().rstrip("/")
+    if web_base:
+        return f"{web_base}/sub/mobile/{sub_id}"
+    sub_base = (
+        server.sub_base_url.rstrip("/")
+        if (server is not None and server.sub_base_url)
+        else settings.XUI_SUB_BASE_URL.rstrip("/")
+    )
+    return f"{sub_base}/{sub_id}"
+
+
 def get_target_inbound_ids(server: Server) -> list[int]:
     """
     Возвращает список ID инбаундов 3X-UI для синхронизации клиента:
@@ -264,7 +281,7 @@ def build_tls_fragment_profile(
 
     return {
         "remarks": f"GhostVPN 🇳🇱 Dual-LTE Anti-DPI ({sub.sub_id[:6]})",
-        "subscription_url": sub.subscription_url,
+        "subscription_url": build_subscription_url(sub.sub_id, server=server),
         "dns": {
             "servers": ["https://1.1.1.1/dns-query", "77.88.8.8"],
             "queryStrategy": "UseIPv4",
@@ -650,6 +667,7 @@ class VPNService:
         sub.expires_at = new_expires_at
         sub.limit_ip = total_limit_ip
         sub.is_active = is_still_active
+        sub.subscription_url = build_subscription_url(sub.sub_id, server=server)
         if plan_id is not None:
             sub.current_plan_id = plan_id
         if not is_trial:

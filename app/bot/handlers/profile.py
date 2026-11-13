@@ -21,7 +21,7 @@ from app.core.i18n import render_progress_bar, t
 from app.db.models import PromoType, Subscription, User
 from app.db.repositories import Repository
 from app.services.qr_card import generate_branded_qr_card
-from app.services.vpn import VPNService, calculate_extra_device_price
+from app.services.vpn import VPNService, build_subscription_url, calculate_extra_device_price
 from app.services.xui.client import XUIClient
 
 router = Router(name="profile")
@@ -39,7 +39,7 @@ async def format_subscription_card(
     status = "🟢 <b>Активна</b>" if sub.is_currently_valid else "🔴 <b>Истекла</b>"
     sub_type = "🔥 Пробный период" if sub.is_trial else "💎 Полная защита"
     exp_str = format_dt_msk(sub.expires_at)
-    sub_url = sub.subscription_url
+    sub_url = build_subscription_url(sub.sub_id, server=sub.server)
 
     days_left = sub.days_left
     total_days = sub.total_period_days
@@ -75,9 +75,9 @@ async def format_subscription_card(
         f"• <b>Подключено устройств:</b> <b>{online_devs} / {sub.limit_ip}</b>{extra_note}\n"
         f"• <b>Сервер {sub.server.name}:</b> <b>{server_status_line}</b>\n"
         f"• <b>Внутренний баланс:</b> <b>{balance_str}</b> | Автопродление: <b>{auto_str}</b>\n\n"
-        f"📋 <b>Твоя персональная ссылка подписки (нажми, чтобы скопировать):</b>\n"
+        f"📋 <b>Твоя единая ссылка подписки (Wi-Fi + LTE, нажми для копирования):</b>\n"
         f"<code>{sub_url}</code>\n\n"
-        f"<i>💡 Нажми кнопку «📲 Happ / v2rayTun (1 клик)» ниже для мгновенного подключения!</i>"
+        f"<i>💡 Нажми кнопку «📲 Подключить в 1 клик (Wi-Fi + LTE)» ниже для мгновенного подключения!</i>"
     )
 
 
@@ -108,23 +108,15 @@ async def cb_help_mobile_boost(
     db_user: User,
 ) -> None:
     sub = db_user.subscription
-    base_web = settings.WEBHOOK_BASE_URL.rstrip("/")
-    mobile_sub_url = (
-        f"{base_web}/sub/mobile/{sub.sub_id}"
-        if sub
-        else "Доступно после активации подписки"
-    )
     text = (
         "📶 <b>Не грузит на мобильном интернете (LTE)?</b>\n\n"
-        "Мы подготовили специальный двойной анти-глушильный профиль для сотовых операторов (МТС, Билайн, МегаФон, Tele2, Yota):\n"
+        "Твоя текущая подписка <b>уже включает поддержку Wi-Fi и LTE</b> (в неё сразу вшиты два Reality-профиля с <b>Yandex / VK SNI</b>, <b>TLS Fragment</b> и принудительным IPv4):\n"
         "• <b>1) 🇳🇱 GhostVPN • LTE Основной (Yandex SNI + Fragment)</b>\n"
         "• <b>2) 🇳🇱 GhostVPN • LTE Резерв (VK SNI + Fragment)</b>\n\n"
-        "✈️ <b>Краткая памятка (3 шага за 15 секунд):</b>\n"
-        "1. <b>Включи «Режим самолёта» на 5 секунд</b> и выключи его — это мгновенно сбросит зависшую DPI-сессию оператора.\n"
-        "2. Нажми кнопку <b>«⚡ Подключить LTE-режим в 1 клик»</b> ниже (или обнови подписку в приложении).\n"
-        "3. Выбери в списке серверов <b>LTE Основной</b> или <b>LTE Резерв</b> (в них уже вшиты TLS Fragment <code>10-20 / 10-15</code> и принудительный IPv4).\n\n"
-        f"🔗 <b>Прямая мульти-ссылка для LTE (нажми для копирования):</b>\n"
-        f"<code>{mobile_sub_url}</code>"
+        "✈️ <b>Что сделать, если оператор «задушил» текущую сессию:</b>\n"
+        "1. <b>Включи «Режим самолёта» на 5 секунд</b> и выключи его — это мгновенно сбросит зависшую DPI-сессию сотового оператора.\n"
+        "2. Открой приложение (Happ / v2rayTun / Hiddify) и нажми <b>«🔄» (обновить подписку)</b>.\n"
+        "3. Переключись в списке серверов на второй профиль <b>«LTE Резерв (VK SNI + Fragment)»</b>."
     )
     await send_or_edit_banner(
         callback,

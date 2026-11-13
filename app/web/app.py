@@ -43,6 +43,7 @@ from app.services.payments.rub_gateway import FreeKassaProvider
 from app.services.payments.stars import TelegramStarsProvider
 from app.services.vpn import (
     VPNService,
+    build_subscription_url,
     calculate_plan_renewal_price_with_slots,
     render_mobile_yaml_profile,
 )
@@ -255,7 +256,7 @@ async def webapp_me(
     sub = user.subscription
     plans = await repo.get_active_plans()
     extra_devs = sub.extra_devices if sub else 0
-    base_web = settings.WEBHOOK_BASE_URL.rstrip("/")
+    unified_sub_url = build_subscription_url(sub.sub_id, server=sub.server) if sub else ""
 
     return {
         "telegram_id": user.telegram_id,
@@ -264,8 +265,8 @@ async def webapp_me(
         "auto_renew": user.auto_renew,
         "is_active": bool(sub and sub.is_currently_valid),
         "sub_id": sub.sub_id if sub else None,
-        "sub_url": sub.subscription_url if sub else "",
-        "mobile_sub_url": f"{base_web}/sub/mobile/{sub.sub_id}" if sub else "",
+        "sub_url": unified_sub_url,
+        "mobile_sub_url": unified_sub_url,
         "days_left": sub.days_left if sub else 0,
         "total_days": sub.total_period_days if sub else 30,
         "expires_str": format_dt_msk(sub.expires_at) if sub else "—",
@@ -675,10 +676,7 @@ async def connect_deep_link(
             detail="Subscription is inactive or user is banned",
         )
 
-    if mode == "mobile":
-        sub_url = f"{settings.WEBHOOK_BASE_URL.rstrip('/')}/sub/mobile/{sub_id}"
-    else:
-        sub_url = sub.subscription_url
+    sub_url = build_subscription_url(sub.sub_id, server=sub.server)
 
     app_title, scheme_tpl = DEEP_LINK_SCHEMES[app_key]
     deep_link = scheme_tpl.format(sub_url=sub_url)

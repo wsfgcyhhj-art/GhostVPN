@@ -99,20 +99,23 @@ def subscription_card_kb(user: User, sub: Subscription | None) -> InlineKeyboard
         base_web = settings.WEBHOOK_BASE_URL.rstrip("/")
         b.row(
             InlineKeyboardButton(
-                text="📲 Happ (1 клик)",
+                text=t("btn_connect_oneclick", lang),
                 url=f"{base_web}/connect/happ/{sub.sub_id}",
-            ),
-            InlineKeyboardButton(
-                text="📲 v2rayTun (1 клик)",
-                url=f"{base_web}/connect/v2raytun/{sub.sub_id}",
-            ),
+            )
         )
         b.row(
             InlineKeyboardButton(
-                text="📲 Hiddify (1 клик)",
+                text="📲 v2rayTun",
+                url=f"{base_web}/connect/v2raytun/{sub.sub_id}",
+            ),
+            InlineKeyboardButton(
+                text="📲 Hiddify",
                 url=f"{base_web}/connect/hiddify/{sub.sub_id}",
             ),
+        )
+        b.row(
             InlineKeyboardButton(text=t("btn_qr_card", lang), callback_data="profile:qr"),
+            InlineKeyboardButton(text=t("btn_mobile_boost", lang), callback_data="help:mobile_boost"),
         )
         b.row(
             InlineKeyboardButton(text=t("btn_add_device", lang), callback_data="devices:menu"),
@@ -123,15 +126,6 @@ def subscription_card_kb(user: User, sub: Subscription | None) -> InlineKeyboard
                 text=t("btn_auto_renew_on" if user.auto_renew else "btn_auto_renew_off", lang),
                 callback_data="profile:toggle_autorenew",
             )
-        )
-        b.row(
-            InlineKeyboardButton(
-                text="⚡ Подключить LTE-режим в 1 клик",
-                url=f"{base_web}/connect/happ/{sub.sub_id}?mode=mobile",
-            )
-        )
-        b.row(
-            InlineKeyboardButton(text=t("btn_mobile_boost", lang), callback_data="help:mobile_boost")
         )
         b.row(
             InlineKeyboardButton(text=t("btn_reissue", lang), callback_data="profile:reissue_confirm"),
@@ -354,19 +348,9 @@ def mobile_boost_kb(sub: Subscription | None, lang: str = "ru") -> InlineKeyboar
         base_web = settings.WEBHOOK_BASE_URL.rstrip("/")
         b.row(
             InlineKeyboardButton(
-                text="⚡ Подключить LTE-режим в 1 клик",
-                url=f"{base_web}/connect/happ/{sub.sub_id}?mode=mobile",
+                text=t("btn_connect_oneclick", lang),
+                url=f"{base_web}/connect/happ/{sub.sub_id}",
             )
-        )
-        b.row(
-            InlineKeyboardButton(
-                text="📲 LTE-режим (v2rayTun)",
-                url=f"{base_web}/connect/v2raytun/{sub.sub_id}?mode=mobile",
-            ),
-            InlineKeyboardButton(
-                text="📲 LTE-режим (Hiddify)",
-                url=f"{base_web}/connect/hiddify/{sub.sub_id}?mode=mobile",
-            ),
         )
     b.row(
         InlineKeyboardButton(text="🔑 К подписке", callback_data="profile:sub"),

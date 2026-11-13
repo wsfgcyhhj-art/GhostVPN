@@ -261,21 +261,21 @@
 
   <!-- Подключение в 1 тап -->
   <div class="card">
-    <div class="card-title">⚡ Подключение в 1 клик</div>
+    <div class="card-title">⚡ Подключение (Wi-Fi + LTE)</div>
     <div class="sub-box" id="subUrlBox">Активируй подписку или триал за 1 ₽ ниже</div>
-    <button class="btn btn-neon" onclick="copySubUrl()">📋 Скопировать ссылку подписки</button>
+    <button class="btn btn-neon" onclick="openApp('happ')">📲 Подключить в 1 клик (Wi-Fi + LTE)</button>
+    <button class="btn btn-dark" style="margin-bottom:8px;" onclick="copySubUrl()">📋 Скопировать ссылку подписки</button>
     <div class="apps-grid">
       <button class="btn btn-dark" onclick="openApp('happ')">📲 Happ</button>
       <button class="btn btn-dark" onclick="openApp('v2raytun')">📲 v2rayTun</button>
       <button class="btn btn-dark" onclick="openApp('hiddify')">📲 Hiddify</button>
     </div>
-    <button class="btn btn-neon" style="margin-top:8px;" onclick="connectLteOneClick()">⚡ Подключить LTE-режим в 1 клик</button>
-    <div class="toggle-row" style="margin-top:4px;">
-      <span style="font-size:12px;color:var(--text-muted);">📶 Режим обхода мобильных глушилок (TLS Fragment)</span>
-      <input type="checkbox" id="mobileModeToggle" onchange="updateSubDisplay()" />
-    </div>
-    <div style="margin-top:8px;padding:10px 12px;background:var(--bg-card-alt);border:1px solid var(--border-hud);border-radius:10px;font-size:11.5px;color:var(--text-muted);line-height:1.45;">
-      ✈️ <b style="color:var(--ghost-white);">Памятка при глушилках LTE:</b> включи <b>режим самолёта на 5 сек</b> для сброса сессии оператора, затем нажми кнопку выше или обнови подписку в приложении (доступны профили <b>LTE Основной Yandex</b> и <b>LTE Резерв VK</b>).
+    <button class="btn btn-dark" style="margin-top:8px;" onclick="toggleMobileHelp()">📶 Не грузит на мобильном?</button>
+    <div id="mobileHelpBox" style="display:none;margin-top:8px;padding:10px 12px;background:var(--bg-card-alt);border:1px solid var(--border-hud);border-radius:10px;font-size:11.5px;color:var(--text-muted);line-height:1.45;">
+      ✈️ <b style="color:var(--ghost-white);">Памятка для мобильного интернета (LTE):</b> твоя единая подписка уже включает анти-глушильные профили с <b>Yandex / VK SNI</b> и <b>TLS Fragment</b>. Если сотовый оператор «задушил» текущую сессию:
+      <br/>1) Включи <b>Авиарежим на 5 секунд</b> и выключи его;
+      <br/>2) Нажми <b>«🔄» (обновить подписку)</b> внутри приложения;
+      <br/>3) Или переключись в списке серверов на второй профиль <b>«LTE Резерв»</b>.
     </div>
   </div>
 
@@ -326,18 +326,16 @@
     }
 
     function updateSubDisplay() {
-      const isMobile = document.getElementById("mobileModeToggle").checked;
       const box = document.getElementById("subUrlBox");
       if (!stateData.sub_url) {
         box.textContent = "Нет активного ключа — выбери тариф ниже";
         return;
       }
-      box.textContent = isMobile ? stateData.mobile_sub_url : stateData.sub_url;
+      box.textContent = stateData.sub_url;
     }
 
     function copySubUrl() {
-      const isMobile = document.getElementById("mobileModeToggle").checked;
-      const target = isMobile ? stateData.mobile_sub_url : stateData.sub_url;
+      const target = stateData.sub_url;
       if (!target) {
         showToast("Сначала активируй подписку!");
         return;
@@ -355,19 +353,12 @@
         showToast("Сначала оформи подписку!");
         return;
       }
-      const isMobile = document.getElementById("mobileModeToggle").checked;
-      const url = `/connect/${appName}/${stateData.sub_id}` + (isMobile ? "?mode=mobile" : "");
-      window.location.href = url;
+      window.location.href = `/connect/${appName}/${stateData.sub_id}`;
     }
 
-    function connectLteOneClick() {
-      if (!stateData.sub_id) {
-        showToast("Сначала оформи подписку!");
-        return;
-      }
-      document.getElementById("mobileModeToggle").checked = true;
-      updateSubDisplay();
-      window.location.href = `/connect/happ/${stateData.sub_id}?mode=mobile`;
+    function toggleMobileHelp() {
+      const el = document.getElementById("mobileHelpBox");
+      el.style.display = el.style.display === "none" ? "block" : "none";
     }
 
     async function buyPlan(planId) {
