@@ -125,3 +125,62 @@ async def test_xui_client_raises_on_unsuccessful_response() -> None:
         )
         with pytest.raises(XUIError, match="Invalid credentials"):
             await xui.login()
+
+
+@pytest.mark.asyncio
+async def test_xui_client_get_inbound_reality_info_parses_stream_settings() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/secret/":
+            return httpx.Response(
+                200,
+                text='<meta name="csrf-token" content="csrf_tok_reality">',
+                headers={"content-type": "text/html"},
+            )
+        if request.method == "POST" and request.url.path.endswith("/login"):
+            return httpx.Response(200, json={"success": True, "msg": "ok"})
+        if request.method == "GET" and request.url.path.endswith("/panel/api/inbounds/get/2"):
+            stream_settings = {
+                "network": "tcp",
+                "security": "reality",
+                "realitySettings": {
+                    "serverNames": ["sun9-14.userapi.com", "vk.com"],
+                    "shortIds": ["a1b2c3d4", ""],
+                    "settings": {
+                        "publicKey": "VK_REALITY_PBK_456",
+                        "fingerprint": "chrome",
+                    },
+                },
+            }
+            return httpx.Response(
+                200,
+                json={
+                    "success": True,
+                    "obj": {
+                        "id": 2,
+                        "port": 8443,
+                        "streamSettings": json.dumps(stream_settings),
+                    },
+                },
+            )
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        xui = XUIClient(
+            host="https://127.0.0.1:2053",
+            web_base_path="/secret",
+            username="admin",
+            password="password",
+            http_client=http_client,
+        )
+        info = await xui.get_inbound_reality_info(2)
+
+    assert info is not None
+    assert info.inbound_id == 2
+    assert info.port == 8443
+    assert info.primary_sni == "sun9-14.userapi.com"
+    assert info.server_names == ["sun9-14.userapi.com", "vk.com"]
+    assert info.public_key == "VK_REALITY_PBK_456"
+    assert info.short_id == "a1b2c3d4"
+    assert info.fingerprint == "chrome"
+
