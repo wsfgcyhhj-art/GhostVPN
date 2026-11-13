@@ -37,7 +37,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "btn_auto_renew_off": "🔄 Автопродление: ВЫКЛ ❌",
         "btn_qr_card": "🖼 Красивая QR-карточка",
         "btn_reissue": "🔄 Обновить ссылку",
-        "btn_mobile_boost": "📶 Не грузит на мобильном? (Решение)",
+        "btn_mobile_boost": "📶 Не грузит на мобильном (LTE)?",
     },
     "en": {
         "welcome_title": "👻 <b>Welcome to GhostVPN — your fast, friendly, borderless internet!</b>\n\n"
@@ -73,7 +73,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "btn_auto_renew_off": "🔄 Auto-renew: OFF ❌",
         "btn_qr_card": "🖼 Branded QR Card",
         "btn_reissue": "🔄 Re-issue Link",
-        "btn_mobile_boost": "📶 Mobile Network Fix (Fragment)",
+        "btn_mobile_boost": "📶 Mobile (LTE) Fix",
     },
 }
 

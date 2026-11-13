@@ -372,8 +372,9 @@ async def sync_xui_traffic_and_enforce_ip_limits(bot: Bot | None = None) -> dict
                         sub.ip_violations_count += 1
                         user = await session.get(User, sub.user_id)
                         if sub.ip_violations_count >= 3:
-                            await client.update_client(
-                                inbound_id=server.inbound_id,
+                            await VPNService._sync_update_client_all_inbounds(
+                                client,
+                                server,
                                 client_uuid=sub.xui_client_uuid,
                                 email=sub.xui_email,
                                 sub_id=sub.sub_id,
@@ -381,7 +382,6 @@ async def sync_xui_traffic_and_enforce_ip_limits(bot: Bot | None = None) -> dict
                                 if sub.expires_at <= now
                                 else int(sub.expires_at.timestamp() * 1000),
                                 limit_ip=sub.limit_ip,
-                                total_gb=0,
                                 enable=False,
                                 tg_id=str(user.telegram_id if user else ""),
                             )
@@ -636,8 +636,9 @@ async def cleanup_stale_xui_clients() -> int:
             try:
                 for sub in stale_subs:
                     try:
-                        await client.delete_client_by_uuid(
-                            inbound_id=server.inbound_id,
+                        await VPNService._sync_delete_client_all_inbounds(
+                            client,
+                            server,
                             client_uuid=sub.xui_client_uuid,
                         )
                     except Exception as exc:

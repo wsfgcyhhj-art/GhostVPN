@@ -10,7 +10,6 @@ from app.bot.keyboards.user import (
     faq_menu_kb,
     instructions_kb,
     main_menu_kb,
-    mobile_boost_kb,
 )
 from app.bot.utils import send_or_edit_banner
 from app.core.config import settings
@@ -144,41 +143,6 @@ async def cb_help_faq_billing(
         banner_key="support",
         caption=text,
         reply_markup=faq_menu_kb(db_user.language),
-        lang=db_user.language,
-        repo=repo,
-    )
-    await callback.answer()
-
-
-@router.callback_query(F.data == "help:mobile_boost")
-async def cb_help_mobile_boost(
-    callback: CallbackQuery,
-    repo: Repository,
-    db_user: User,
-) -> None:
-    sub = db_user.subscription
-    base_web = settings.WEBHOOK_BASE_URL.rstrip("/")
-    mobile_sub_url = (
-        f"{base_web}/sub/mobile/{sub.sub_id}"
-        if sub
-        else "Доступно после активации подписки"
-    )
-    text = (
-        "📶 <b>Режим обхода мобильных глушилок (TLS Fragment)</b>\n\n"
-        "Если на домашнем Wi-Fi всё летает, а на мобильном интернете (LTE/4G) соединение задумывается — мобильный оператор режет пакеты.\n\n"
-        "✨ <b>Как решить за 15 секунд:</b>\n"
-        "1. Нажми кнопку <b>«🚀 Включить мобильный профиль»</b> ниже (для Happ или v2rayTun).\n"
-        "2. Или в настройках своего приложения включи два тумблера:\n"
-        "   • <b>Фрагментация (TLS Fragment):</b> <code>Вкл (10-20 байт, задержка 10-15 мс)</code>\n"
-        "   • <b>IPv6 маршрутизация:</b> <code>Отключить (Только IPv4)</code>\n\n"
-        f"🔗 <b>Твоя умная ссылка с поддержкой мобильных сетей:</b>\n"
-        f"<code>{mobile_sub_url}</code>"
-    )
-    await send_or_edit_banner(
-        callback,
-        banner_key="connect",
-        caption=text,
-        reply_markup=mobile_boost_kb(sub, db_user.language),
         lang=db_user.language,
         repo=repo,
     )

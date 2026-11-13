@@ -468,14 +468,14 @@ async def msg_admin_u_limit(
     if server:
         client = XUIClient.from_server(server)
         try:
-            await client.update_client(
-                inbound_id=server.inbound_id,
+            await VPNService._sync_update_client_all_inbounds(
+                client,
+                server,
                 client_uuid=sub.xui_client_uuid,
                 email=sub.xui_email,
                 sub_id=sub.sub_id,
                 expiry_time_ms=datetime_to_ms(sub.expires_at),
                 limit_ip=new_limit,
-                total_gb=0,
                 enable=sub.is_currently_valid,
                 tg_id=str(target.telegram_id),
             )

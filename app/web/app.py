@@ -9,7 +9,7 @@ from typing import Any, AsyncGenerator
 from urllib.parse import parse_qsl
 
 from aiogram.types import LabeledPrice, Update
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -43,8 +43,8 @@ from app.services.payments.rub_gateway import FreeKassaProvider
 from app.services.payments.stars import TelegramStarsProvider
 from app.services.vpn import (
     VPNService,
-    build_tls_fragment_profile,
     calculate_plan_renewal_price_with_slots,
+    render_mobile_yaml_profile,
 )
 from app.tasks.scheduler import create_scheduler
 
@@ -380,11 +380,22 @@ async def webapp_create_payment(
 
 
 # --- Smart Mobile Anti-DPI Subscription Endpoint (/sub/mobile/{sub_id}) ---
-@app.get("/sub/mobile/{sub_id}")
+@app.get("/sub/mobile/{sub_id}", response_model=None)
 async def get_mobile_fragment_subscription(
     sub_id: str,
+    request: Request,
+    format: str | None = Query(default=None),
     session: AsyncSession = Depends(get_db_session),
-) -> JSONResponse:
+) -> Response:
+    """
+    Умный мульти-эндпоинт для обхода мобильных глушилок (LTE / ТСПУ).
+    Считывает актуальные `serverNames` (SNI), `publicKey`, `shortId` и `port` из основного
+    (`XUI_INBOUND_ID`) и резервного (`XUI_MOBILE_INBOUND_ID`) инбаундов в 3X-UI и отдаёт оба подключения:
+      1) «🇳🇱 GhostVPN • LTE Основной (Yandex SNI + Fragment)»
+      2) «🇳🇱 GhostVPN • LTE Резерв (VK SNI + Fragment)»
+    В зависимости от `User-Agent` (Happ / v2rayTun / Hiddify / Clash / Shadowrocket) или `?format=yaml|base64|json`
+    возвращает JSON мульти-профиль, YAML-конфиг или Base64-подписку.
+    """
     if not sub_id.isalnum() or not (4 <= len(sub_id) <= 64):
         raise HTTPException(status_code=400, detail="Invalid sub_id")
 
@@ -400,13 +411,39 @@ async def get_mobile_fragment_subscription(
             detail="Subscription is inactive or user is banned",
         )
 
-    profile_json = build_tls_fragment_profile(sub)
+    vpn_service = VPNService(session)
+    multi_profile = await vpn_service.fetch_live_mobile_profile(sub)
+
+    common_headers = {
+        "Profile-Title": "GhostVPN-Mobile-Stealth",
+        "Subscription-Userinfo": (
+            f"upload=0; download={sub.used_traffic_bytes}; total=0; "
+            f"expire={int(sub.expires_at.timestamp())}"
+        ),
+    }
+
+    ua = (request.headers.get("user-agent") or "").lower()
+    fmt = (format or "").lower().strip()
+
+    if fmt == "yaml" or (not fmt and any(k in ua for k in ("clash", "mihomo", "stash", "flclash"))):
+        yaml_body = render_mobile_yaml_profile(multi_profile)
+        return Response(
+            content=yaml_body,
+            media_type="text/yaml; charset=utf-8",
+            headers=common_headers,
+        )
+
+    if fmt == "base64" or (
+        not fmt and any(k in ua for k in ("v2rayn", "shadowrocket", "streisand", "foxray"))
+    ):
+        return PlainTextResponse(
+            content=str(multi_profile["base64_sub"]),
+            headers=common_headers,
+        )
+
     return JSONResponse(
-        content=profile_json,
-        headers={
-            "Profile-Title": "GhostVPN-Mobile-Stealth",
-            "Subscription-Userinfo": f"upload=0; download={sub.used_traffic_bytes}; total=0; expire={int(sub.expires_at.timestamp())}",
-        },
+        content=multi_profile,
+        headers=common_headers,
     )
 
 

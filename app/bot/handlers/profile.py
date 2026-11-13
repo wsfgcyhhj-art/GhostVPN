@@ -10,6 +10,7 @@ from app.bot.keyboards.user import (
     extra_device_buy_kb,
     main_menu_kb,
     manage_slots_kb,
+    mobile_boost_kb,
     reissue_confirm_kb,
     subscription_card_kb,
 )
@@ -94,6 +95,42 @@ async def cb_profile_sub(
         banner_key="profile",
         caption=text,
         reply_markup=subscription_card_kb(db_user, sub),
+        lang=db_user.language,
+        repo=repo,
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "help:mobile_boost")
+async def cb_help_mobile_boost(
+    callback: CallbackQuery,
+    repo: Repository,
+    db_user: User,
+) -> None:
+    sub = db_user.subscription
+    base_web = settings.WEBHOOK_BASE_URL.rstrip("/")
+    mobile_sub_url = (
+        f"{base_web}/sub/mobile/{sub.sub_id}"
+        if sub
+        else "Доступно после активации подписки"
+    )
+    text = (
+        "📶 <b>Не грузит на мобильном интернете (LTE)?</b>\n\n"
+        "Мы подготовили специальный двойной анти-глушильный профиль для сотовых операторов (МТС, Билайн, МегаФон, Tele2, Yota):\n"
+        "• <b>1) 🇳🇱 GhostVPN • LTE Основной (Yandex SNI + Fragment)</b>\n"
+        "• <b>2) 🇳🇱 GhostVPN • LTE Резерв (VK SNI + Fragment)</b>\n\n"
+        "✈️ <b>Краткая памятка (3 шага за 15 секунд):</b>\n"
+        "1. <b>Включи «Режим самолёта» на 5 секунд</b> и выключи его — это мгновенно сбросит зависшую DPI-сессию оператора.\n"
+        "2. Нажми кнопку <b>«⚡ Подключить LTE-режим в 1 клик»</b> ниже (или обнови подписку в приложении).\n"
+        "3. Выбери в списке серверов <b>LTE Основной</b> или <b>LTE Резерв</b> (в них уже вшиты TLS Fragment <code>10-20 / 10-15</code> и принудительный IPv4).\n\n"
+        f"🔗 <b>Прямая мульти-ссылка для LTE (нажми для копирования):</b>\n"
+        f"<code>{mobile_sub_url}</code>"
+    )
+    await send_or_edit_banner(
+        callback,
+        banner_key="connect",
+        caption=text,
+        reply_markup=mobile_boost_kb(sub, db_user.language),
         lang=db_user.language,
         repo=repo,
     )

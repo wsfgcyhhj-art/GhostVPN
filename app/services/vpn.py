@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import base64
 import secrets
 import string
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote, urlparse
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,7 +24,7 @@ from app.db.models import (
     User,
     utcnow,
 )
-from app.services.xui.client import XUIClient, XUIError
+from app.services.xui.client import XUIClient, XUIError, XUIInboundRealityInfo
 
 if TYPE_CHECKING:
     from aiogram import Bot
@@ -30,9 +32,31 @@ if TYPE_CHECKING:
 
 ALPHABET = string.ascii_lowercase + string.digits
 
+NODE_TITLE_PRIMARY = "🇳🇱 GhostVPN • LTE Основной (Yandex SNI + Fragment)"
+NODE_TITLE_RESERVE = "🇳🇱 GhostVPN • LTE Резерв (VK SNI + Fragment)"
+
+FRAGMENT_SPEC: dict[str, Any] = {
+    "enabled": True,
+    "packets": "tlshello",
+    "length": "10-20",
+    "interval": "10-15",
+}
+
 
 def generate_sub_id(length: int = 16) -> str:
     return "".join(secrets.choice(ALPHABET) for _ in range(length))
+
+
+def get_target_inbound_ids(server: Server) -> list[int]:
+    """
+    Возвращает список ID инбаундов 3X-UI для синхронизации клиента:
+    основной `server.inbound_id` и (если задан в `.env`) резервный `XUI_MOBILE_INBOUND_ID`.
+    """
+    ids = [server.inbound_id]
+    mob_id = settings.XUI_MOBILE_INBOUND_ID
+    if mob_id is not None and mob_id > 0 and mob_id not in ids:
+        ids.append(mob_id)
+    return ids
 
 
 def calculate_new_expiry(
@@ -85,31 +109,244 @@ def calculate_plan_renewal_price_with_slots(
     return (base_price + extra_cost).quantize(Decimal("0.01"))
 
 
-def build_tls_fragment_profile(sub: Subscription) -> dict[str, Any]:
+def _extract_server_hostname(server: Server | None) -> str:
+    if server is not None:
+        for raw_url in (server.sub_base_url, server.host):
+            if raw_url:
+                parsed = urlparse(raw_url if "://" in raw_url else f"https://{raw_url}")
+                if parsed.hostname:
+                    return parsed.hostname
+    parsed_def = urlparse(settings.XUI_SUB_BASE_URL)
+    return parsed_def.hostname or "127.0.0.1"
+
+
+def _select_preferred_sni(
+    server_names: list[str], preferred_keyword: str, fallback_sni: str
+) -> str:
+    for name in server_names:
+        if preferred_keyword.lower() in name.lower():
+            return name
+    if server_names:
+        return server_names[0]
+    return fallback_sni
+
+
+def _build_vless_reality_uri(
+    *,
+    client_uuid: str,
+    host: str,
+    port: int,
+    sni: str,
+    public_key: str,
+    short_id: str,
+    fingerprint: str,
+    spider_x: str,
+    title: str,
+) -> str:
+    spx_encoded = quote(spider_x or "/", safe="")
+    title_encoded = quote(title, safe="")
+    return (
+        f"vless://{client_uuid}@{host}:{port}"
+        f"?type=tcp&security=reality&pbk={public_key}&fp={fingerprint}"
+        f"&sni={sni}&sid={short_id}&spx={spx_encoded}&flow=xtls-rprx-vision"
+        f"&fragment=10-20,10-15,tlshello#{title_encoded}"
+    )
+
+
+def build_tls_fragment_profile(
+    sub: Subscription,
+    primary_info: XUIInboundRealityInfo | None = None,
+    reserve_info: XUIInboundRealityInfo | None = None,
+) -> dict[str, Any]:
     """
-    Генерирует готовый JSON-профиль с поддержкой TLS Fragment (обход мобильных глушилок ТСПУ)
-    и разрешёнными SNI-доменами РФ (dl.google.com, ya.ru, vk.com) для Happ / v2rayTun / Hiddify.
+    Генерирует мульти-профиль с двумя Reality-подключениями на одном VPS:
+      1) «🇳🇱 GhostVPN • LTE Основной (Yandex SNI + Fragment)»
+      2) «🇳🇱 GhostVPN • LTE Резерв (VK SNI + Fragment)»
+    Использует реальные serverNames (SNI), publicKey, shortId и port из настроек inbound в 3X-UI,
+    вшивая TLS Fragment (packets: "tlshello", length: "10-20", interval: "10-15"),
+    принудительный IPv4 (UseIPv4 / prefer_ipv4) и uTLS fingerprint ("chrome" / "ios").
     """
-    sni_list = [
+    server = sub.server
+    host = _extract_server_hostname(server)
+
+    env_snis = [
         d.strip() for d in settings.XUI_SNI_DOMAINS.split(",") if d.strip()
-    ] or ["dl.google.com", "ya.ru", "vk.com"]
+    ] or ["ya.ru", "vk.com", "dl.google.com"]
+
+    # 1. Основной LTE-профиль (Yandex SNI + uTLS chrome + TLS Fragment)
+    p_names = primary_info.server_names if (primary_info and primary_info.server_names) else env_snis
+    p_sni = _select_preferred_sni(p_names, "ya", "ya.ru")
+    p_port = primary_info.port if primary_info else 443
+    p_pbk = primary_info.public_key if primary_info else ""
+    p_sid = primary_info.short_id if primary_info else ""
+    p_spx = primary_info.spider_x if primary_info else "/"
+    p_fp = "chrome"
+
+    # 2. Резервный LTE-профиль (VK SNI + uTLS ios + TLS Fragment)
+    eff_reserve = reserve_info or primary_info
+    r_names = eff_reserve.server_names if (eff_reserve and eff_reserve.server_names) else env_snis
+    r_sni = _select_preferred_sni(r_names, "vk", "vk.com")
+    r_port = eff_reserve.port if eff_reserve else 8443
+    r_pbk = eff_reserve.public_key if eff_reserve else p_pbk
+    r_sid = eff_reserve.short_id if eff_reserve else p_sid
+    r_spx = eff_reserve.spider_x if eff_reserve else "/"
+    r_fp = "ios"
+
+    uri_primary = _build_vless_reality_uri(
+        client_uuid=sub.xui_client_uuid,
+        host=host,
+        port=p_port,
+        sni=p_sni,
+        public_key=p_pbk,
+        short_id=p_sid,
+        fingerprint=p_fp,
+        spider_x=p_spx,
+        title=NODE_TITLE_PRIMARY,
+    )
+    uri_reserve = _build_vless_reality_uri(
+        client_uuid=sub.xui_client_uuid,
+        host=host,
+        port=r_port,
+        sni=r_sni,
+        public_key=r_pbk,
+        short_id=r_sid,
+        fingerprint=r_fp,
+        spider_x=r_spx,
+        title=NODE_TITLE_RESERVE,
+    )
+
+    node_primary = {
+        "name": NODE_TITLE_PRIMARY,
+        "inbound_id": primary_info.inbound_id if primary_info else (server.inbound_id if server else 1),
+        "protocol": "vless",
+        "address": host,
+        "port": p_port,
+        "uuid": sub.xui_client_uuid,
+        "flow": "xtls-rprx-vision",
+        "sni": p_sni,
+        "serverNames": p_names,
+        "publicKey": p_pbk,
+        "shortId": p_sid,
+        "spiderX": p_spx,
+        "fingerprint": p_fp,
+        "ip_strategy": "UseIPv4",
+        "prefer_ipv4": True,
+        "fragment": dict(FRAGMENT_SPEC),
+        "vless_uri": uri_primary,
+    }
+    node_reserve = {
+        "name": NODE_TITLE_RESERVE,
+        "inbound_id": (
+            reserve_info.inbound_id
+            if reserve_info
+            else (settings.XUI_MOBILE_INBOUND_ID or (server.inbound_id if server else 1))
+        ),
+        "protocol": "vless",
+        "address": host,
+        "port": r_port,
+        "uuid": sub.xui_client_uuid,
+        "flow": "xtls-rprx-vision",
+        "sni": r_sni,
+        "serverNames": r_names,
+        "publicKey": r_pbk,
+        "shortId": r_sid,
+        "spiderX": r_spx,
+        "fingerprint": r_fp,
+        "ip_strategy": "UseIPv4",
+        "prefer_ipv4": True,
+        "fragment": dict(FRAGMENT_SPEC),
+        "vless_uri": uri_reserve,
+    }
+
+    combined_sni = list(dict.fromkeys([p_sni, r_sni, *env_snis]))
+    raw_links = f"{uri_primary}\n{uri_reserve}"
+    b64_links = base64.b64encode(raw_links.encode("utf-8")).decode("ascii")
 
     return {
-        "remarks": f"GhostVPN 🇳🇱 Anti-TSP ({sub.sub_id[:6]})",
+        "remarks": f"GhostVPN 🇳🇱 Dual-LTE Anti-DPI ({sub.sub_id[:6]})",
         "subscription_url": sub.subscription_url,
         "dns": {
             "servers": ["https://1.1.1.1/dns-query", "77.88.8.8"],
             "queryStrategy": "UseIPv4",
+            "strategy": "prefer_ipv4",
         },
-        "fragment": {
-            "enabled": True,
-            "packets": "tlshello",
-            "length": "10-20",
-            "interval": "10-15",
-        },
-        "sni_whitelist": sni_list,
+        "fragment": dict(FRAGMENT_SPEC),
+        "ip_strategy": "UseIPv4",
+        "prefer_ipv4": True,
+        "utls_fingerprints": ["chrome", "ios"],
+        "sni_whitelist": combined_sni,
         "ipv6_disabled": True,
+        "profiles": [node_primary, node_reserve],
+        "links": [uri_primary, uri_reserve],
+        "base64_sub": b64_links,
     }
+
+
+def render_mobile_yaml_profile(multi_profile: dict[str, Any]) -> str:
+    """
+    Генерирует YAML мульти-профиль (Clash Meta / Mihomo / Hiddify / Stash)
+    с двумя Reality-подключениями, TLS Fragment, UseIPv4/prefer_ipv4 и uTLS chrome/ios.
+    """
+    profiles = multi_profile.get("profiles", [])
+    lines = [
+        "# GhostVPN Dual-LTE Anti-DPI Multi-Profile",
+        "mixed-port: 7890",
+        "allow-lan: false",
+        "mode: rule",
+        "ipv6: false",
+        "dns:",
+        "  enable: true",
+        "  ipv6: false",
+        "  prefer-h3: false",
+        "  default-nameserver:",
+        "    - 77.88.8.8",
+        "    - 1.1.1.1",
+        "  nameserver:",
+        "    - https://1.1.1.1/dns-query",
+        "proxies:",
+    ]
+    for p in profiles:
+        lines.extend(
+            [
+                f'  - name: "{p["name"]}"',
+                "    type: vless",
+                f'    server: "{p["address"]}"',
+                f'    port: {p["port"]}',
+                f'    uuid: "{p["uuid"]}"',
+                "    network: tcp",
+                "    tls: true",
+                "    udp: true",
+                "    flow: xtls-rprx-vision",
+                "    ip-version: ipv4",
+                "    ip-strategy: prefer_ipv4",
+                "    query-strategy: UseIPv4",
+                f'    servername: "{p["sni"]}"',
+                f'    client-fingerprint: "{p["fingerprint"]}"',
+                "    reality-opts:",
+                f'      public-key: "{p["publicKey"]}"',
+                f'      short-id: "{p["shortId"]}"',
+                "    tls-fragment:",
+                "      enabled: true",
+                '      packets: "tlshello"',
+                '      length: "10-20"',
+                '      interval: "10-15"',
+            ]
+        )
+    lines.extend(
+        [
+            "proxy-groups:",
+            '  - name: "👻 GhostVPN LTE"',
+            "    type: url-test",
+            "    url: http://www.gstatic.com/generate_204",
+            "    interval: 120",
+            "    proxies:",
+            f'      - "{NODE_TITLE_PRIMARY}"',
+            f'      - "{NODE_TITLE_RESERVE}"',
+            "rules:",
+            '  - MATCH,👻 GhostVPN LTE',
+        ]
+    )
+    return "\n".join(lines) + "\n"
 
 
 def datetime_to_ms(dt: datetime) -> int:
@@ -118,7 +355,10 @@ def datetime_to_ms(dt: datetime) -> int:
 
 
 class VPNService:
-    """Оркестратор выдачи, продления, слотов устройств, сброса и деактивации подписок в БД и 3X-UI."""
+    """
+    Оркестратор выдачи, продления, слотов устройств, сброса и деактивации подписок в БД и 3X-UI.
+    Синхронизирует каждого клиента одновременно в основном (`XUI_INBOUND_ID`) и резервном LTE (`XUI_MOBILE_INBOUND_ID`) инбаундах.
+    """
 
     def __init__(
         self, session: AsyncSession, xui_client_override: XUIClient | None = None
@@ -140,6 +380,157 @@ class VPNService:
             return self._xui_override
         return XUIClient.from_server(server)
 
+    @staticmethod
+    async def _sync_add_client_all_inbounds(
+        client: XUIClient,
+        server: Server,
+        *,
+        client_uuid: str,
+        email: str,
+        sub_id: str,
+        expiry_time_ms: int,
+        limit_ip: int,
+        enable: bool,
+        tg_id: str,
+    ) -> None:
+        target_inbounds = get_target_inbound_ids(server)
+        for idx, inbound_id in enumerate(target_inbounds):
+            try:
+                await client.add_client(
+                    inbound_id=inbound_id,
+                    client_uuid=client_uuid,
+                    email=email,
+                    sub_id=sub_id,
+                    expiry_time_ms=expiry_time_ms,
+                    limit_ip=limit_ip,
+                    total_gb=0,
+                    enable=enable,
+                    tg_id=tg_id,
+                )
+            except XUIError as exc:
+                if idx > 0 and "duplicate email" in str(exc).lower():
+                    await client.add_client(
+                        inbound_id=inbound_id,
+                        client_uuid=client_uuid,
+                        email=f"{email}_lte",
+                        sub_id=sub_id,
+                        expiry_time_ms=expiry_time_ms,
+                        limit_ip=limit_ip,
+                        total_gb=0,
+                        enable=enable,
+                        tg_id=tg_id,
+                    )
+                elif idx > 0:
+                    logger.warning(
+                        "Не удалось добавить клиента %s в резервный LTE-inbound #%s: %s",
+                        email,
+                        inbound_id,
+                        exc,
+                    )
+                else:
+                    raise
+
+    @staticmethod
+    async def _sync_update_client_all_inbounds(
+        client: XUIClient,
+        server: Server,
+        *,
+        client_uuid: str,
+        email: str,
+        sub_id: str,
+        expiry_time_ms: int,
+        limit_ip: int,
+        enable: bool,
+        tg_id: str,
+    ) -> None:
+        target_inbounds = get_target_inbound_ids(server)
+        for idx, inbound_id in enumerate(target_inbounds):
+            try:
+                await client.update_client(
+                    inbound_id=inbound_id,
+                    client_uuid=client_uuid,
+                    email=email,
+                    sub_id=sub_id,
+                    expiry_time_ms=expiry_time_ms,
+                    limit_ip=limit_ip,
+                    total_gb=0,
+                    enable=enable,
+                    tg_id=tg_id,
+                )
+            except XUIError as exc:
+                if idx > 0:
+                    # Если резервный LTE-inbound был подключён позже, автоматически создаём в нём клиента
+                    try:
+                        await client.add_client(
+                            inbound_id=inbound_id,
+                            client_uuid=client_uuid,
+                            email=email,
+                            sub_id=sub_id,
+                            expiry_time_ms=expiry_time_ms,
+                            limit_ip=limit_ip,
+                            total_gb=0,
+                            enable=enable,
+                            tg_id=tg_id,
+                        )
+                    except Exception as add_exc:
+                        logger.warning(
+                            "Не удалось синхронизировать клиента %s в резервном LTE-inbound #%s: %s",
+                            email,
+                            inbound_id,
+                            add_exc,
+                        )
+                else:
+                    raise
+
+    @staticmethod
+    async def _sync_delete_client_all_inbounds(
+        client: XUIClient,
+        server: Server,
+        *,
+        client_uuid: str,
+    ) -> None:
+        for inbound_id in get_target_inbound_ids(server):
+            try:
+                await client.delete_client_by_uuid(
+                    inbound_id=inbound_id,
+                    client_uuid=client_uuid,
+                )
+            except XUIError as exc:
+                logger.warning(
+                    "Клиент %s не удалён из inbound #%s (возможно уже отсутствует): %s",
+                    client_uuid,
+                    inbound_id,
+                    exc,
+                )
+
+    async def fetch_live_mobile_profile(self, sub: Subscription) -> dict[str, Any]:
+        """
+        Запрашивает реальные настройки `serverNames` (SNI), `publicKey`, `shortId`, `port`
+        напрямую из основного (`XUI_INBOUND_ID`) и резервного (`XUI_MOBILE_INBOUND_ID`) инбаундов в 3X-UI
+        и возвращает готовый мульти-профиль с двумя LTE-подключениями.
+        """
+        server = sub.server or await self._get_server()
+        primary_info: XUIInboundRealityInfo | None = None
+        reserve_info: XUIInboundRealityInfo | None = None
+
+        client = self._make_xui_client(server)
+        try:
+            primary_info = await client.get_inbound_reality_info(server.inbound_id)
+            mob_id = settings.XUI_MOBILE_INBOUND_ID
+            if mob_id is not None and mob_id > 0 and mob_id != server.inbound_id:
+                reserve_info = await client.get_inbound_reality_info(mob_id)
+        except Exception as exc:
+            logger.debug("Используем кэшированные/дефолтные параметры Reality для /sub/mobile: %s", exc)
+        finally:
+            if self._xui_override is None:
+                await client.close()
+
+        return build_tls_fragment_profile(
+            sub,
+            primary_info=primary_info,
+            reserve_info=reserve_info,
+        )
+
     async def grant_or_extend_subscription(
         self,
         user: User,
@@ -150,10 +541,8 @@ class VPNService:
         plan_id: int | None = None,
     ) -> Subscription:
         """
-        Создаёт клиента в 3X-UI при первой выдаче или обновляет существующего при продлении,
-        сохраняя его персональный `subId` и `Subscription URL`.
-        Если клиент был ранее удалён из 3X-UI после долгого простоя (`deleted_from_xui=True`),
-        прозрачно пересоздаёт его с тем же `sub_id` и `uuid`.
+        Создаёт клиента в 3X-UI (в основном и резервном LTE-инбаунде) при первой выдаче
+        или обновляет существующего при продлении, сохраняя его `subId` и `uuid`.
         """
         now = utcnow()
         eff_limit_ip = limit_ip or settings.DEFAULT_LIMIT_IP
@@ -173,14 +562,14 @@ class VPNService:
 
             client = self._make_xui_client(server)
             try:
-                await client.add_client(
-                    inbound_id=server.inbound_id,
+                await self._sync_add_client_all_inbounds(
+                    client,
+                    server,
                     client_uuid=new_uuid,
                     email=email,
                     sub_id=new_sub_id,
                     expiry_time_ms=expiry_ms,
                     limit_ip=eff_limit_ip,
-                    total_gb=0,
                     enable=True,
                     tg_id=str(user.telegram_id),
                 )
@@ -217,7 +606,7 @@ class VPNService:
             await self.session.refresh(user, attribute_names=["subscription"])
             return sub
 
-        # Продление существующей подписки (сохраняем старый subId!)
+        # Продление существующей подписки (сохраняем старый subId и uuid!)
         server = sub.server or await self._get_server()
         was_expired = not sub.is_currently_valid
         new_expires_at = calculate_new_expiry(sub.expires_at, days, now=now)
@@ -228,27 +617,27 @@ class VPNService:
         client = self._make_xui_client(server)
         try:
             if sub.deleted_from_xui:
-                await client.add_client(
-                    inbound_id=server.inbound_id,
+                await self._sync_add_client_all_inbounds(
+                    client,
+                    server,
                     client_uuid=sub.xui_client_uuid,
                     email=sub.xui_email,
                     sub_id=sub.sub_id,
                     expiry_time_ms=expiry_ms,
                     limit_ip=total_limit_ip,
-                    total_gb=0,
                     enable=is_still_active,
                     tg_id=str(user.telegram_id),
                 )
                 sub.deleted_from_xui = False
             else:
-                await client.update_client(
-                    inbound_id=server.inbound_id,
+                await self._sync_update_client_all_inbounds(
+                    client,
+                    server,
                     client_uuid=sub.xui_client_uuid,
                     email=sub.xui_email,
                     sub_id=sub.sub_id,
                     expiry_time_ms=expiry_ms,
                     limit_ip=total_limit_ip,
-                    total_gb=0,
                     enable=is_still_active,
                     tg_id=str(user.telegram_id),
                 )
@@ -280,7 +669,7 @@ class VPNService:
         return sub
 
     async def add_extra_device_slot(self, user: User, slots: int = 1) -> Subscription:
-        """Увеличивает `limit_ip` в БД и 3X-UI на указанное число дополнительных устройств."""
+        """Увеличивает `limit_ip` в БД и во всех активных инбаундах 3X-UI."""
         res = await self.session.execute(
             select(Subscription).where(Subscription.user_id == user.id)
         )
@@ -295,14 +684,14 @@ class VPNService:
         server = sub.server or await self._get_server()
         client = self._make_xui_client(server)
         try:
-            await client.update_client(
-                inbound_id=server.inbound_id,
+            await self._sync_update_client_all_inbounds(
+                client,
+                server,
                 client_uuid=sub.xui_client_uuid,
                 email=sub.xui_email,
                 sub_id=sub.sub_id,
                 expiry_time_ms=datetime_to_ms(sub.expires_at),
                 limit_ip=new_limit,
-                total_gb=0,
                 enable=sub.is_currently_valid,
                 tg_id=str(user.telegram_id),
             )
@@ -321,8 +710,7 @@ class VPNService:
         self, user: User, target_extra_devices: int = 0
     ) -> Subscription:
         """
-        Позволяет пользователю в меню «Управлять слотами» уменьшить количество дополнительных
-        слотов (вплоть до 0, т.е. обратно до базовых DEFAULT_LIMIT_IP=3) перед продлением.
+        Уменьшает количество дополнительных слотов в БД и синхронно в обоих инбаундах 3X-UI.
         """
         res = await self.session.execute(
             select(Subscription).where(Subscription.user_id == user.id)
@@ -337,14 +725,14 @@ class VPNService:
         server = sub.server or await self._get_server()
         client = self._make_xui_client(server)
         try:
-            await client.update_client(
-                inbound_id=server.inbound_id,
+            await self._sync_update_client_all_inbounds(
+                client,
+                server,
                 client_uuid=sub.xui_client_uuid,
                 email=sub.xui_email,
                 sub_id=sub.sub_id,
                 expiry_time_ms=datetime_to_ms(sub.expires_at),
                 limit_ip=new_limit,
-                total_gb=0,
                 enable=sub.is_currently_valid,
                 tg_id=str(user.telegram_id),
             )
@@ -360,8 +748,8 @@ class VPNService:
 
     async def reissue_key(self, user: User, *, force_by_admin: bool = False) -> Subscription:
         """
-        Перегенерирует UUID и subId в 3X-UI с сохранением текущего срока действия `expires_at`.
-        Обычному пользователю доступно не чаще 1 раза в 24 часа.
+        Перегенерирует UUID и subId одновременно в основном и резервном LTE-инбаундах 3X-UI
+        с сохранением текущего срока действия `expires_at`.
         """
         res = await self.session.execute(
             select(Subscription).where(Subscription.user_id == user.id)
@@ -395,21 +783,19 @@ class VPNService:
 
         client = self._make_xui_client(server)
         try:
-            try:
-                await client.delete_client_by_uuid(
-                    inbound_id=server.inbound_id, client_uuid=old_uuid
-                )
-            except XUIError as exc:
-                logger.warning("Старый клиент %s не удалён (возможно уже отсутствует): %s", old_uuid, exc)
-
-            await client.add_client(
-                inbound_id=server.inbound_id,
+            await self._sync_delete_client_all_inbounds(
+                client,
+                server,
+                client_uuid=old_uuid,
+            )
+            await self._sync_add_client_all_inbounds(
+                client,
+                server,
                 client_uuid=new_uuid,
                 email=sub.xui_email,
                 sub_id=new_sub_id,
                 expiry_time_ms=expiry_ms,
                 limit_ip=sub.limit_ip,
-                total_gb=0,
                 enable=enable_flag,
                 tg_id=str(user.telegram_id),
             )
@@ -432,14 +818,14 @@ class VPNService:
 
         client = self._make_xui_client(server)
         try:
-            await client.update_client(
-                inbound_id=server.inbound_id,
+            await self._sync_update_client_all_inbounds(
+                client,
+                server,
                 client_uuid=sub.xui_client_uuid,
                 email=sub.xui_email,
                 sub_id=sub.sub_id,
                 expiry_time_ms=datetime_to_ms(sub.expires_at),
                 limit_ip=sub.limit_ip,
-                total_gb=0,
                 enable=enabled,
                 tg_id=str(user.telegram_id),
             )
@@ -456,11 +842,7 @@ class VPNService:
         bot: "Bot | None" = None,
     ) -> tuple[bool, Subscription | None]:
         """
-        Идемпотентная обработка успешного платежа (SUBSCRIPTION, TRIAL, EXTRA_DEVICE, AUTO_RENEW):
-        1) Если уже COMPLETED — ничего не делает.
-        2) Если PENDING — списывает использованный внутренний баланс, обнуляет одноразовую скидку,
-           начисляет 15% рефереру и переводит транзакцию в PAID_PENDING_PROVISION.
-        3) Вызывает 3X-UI для выдачи/продления подписки или добавления слота устройства.
+        Идемпотентная обработка успешного платежа (SUBSCRIPTION, TRIAL, EXTRA_DEVICE, AUTO_RENEW).
         """
         locked_tx_res = await self.session.execute(
             select(Transaction).where(Transaction.id == tx.id).with_for_update()
@@ -484,7 +866,6 @@ class VPNService:
         if user is None:
             raise RuntimeError(f"Транзакция #{tx.id} ссылается на несуществующего пользователя")
 
-        # Защита от гонки (race condition) при повторной оплате триала
         if (
             tx.tx_type == TransactionType.TRIAL
             and tx.status == TransactionStatus.PENDING
@@ -516,7 +897,6 @@ class VPNService:
             if tx.discount_percent > 0:
                 user.pending_discount_percent = 0
 
-            # Реферальное начисление 15% с каждой оплаты друга (подписки, продления, слоты)
             total_paid_value = tx.amount_rub + tx.balance_used_rub
             if user.referrer_id and total_paid_value > Decimal("0.00"):
                 referrer_user = await self.session.get(User, user.referrer_id)
@@ -564,7 +944,6 @@ class VPNService:
                 ),
             )
 
-        # Фаза 2: Выполнение действия в 3X-UI
         try:
             if tx.tx_type == TransactionType.EXTRA_DEVICE:
                 sub = await self.add_extra_device_slot(

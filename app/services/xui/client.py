@@ -44,6 +44,22 @@ class XUIClientTraffic:
     online_ips: list[str] = field(default_factory=list)
 
 
+@dataclass
+class XUIInboundRealityInfo:
+    inbound_id: int
+    port: int = 443
+    server_names: list[str] = field(default_factory=list)
+    public_key: str = ""
+    short_id: str = ""
+    fingerprint: str = "chrome"
+    spider_x: str = "/"
+    remark: str = ""
+
+    @property
+    def primary_sni(self) -> str:
+        return self.server_names[0] if self.server_names else ""
+
+
 class XUIClient:
     """
     Асинхронный клиент для панели 3X-UI (v3.11.0).
@@ -319,6 +335,102 @@ class XUIClient:
         if not data.get("success"):
             msg = str(data.get("msg", ""))
             raise XUIError(f"Ошибка delClient в 3X-UI: {msg}")
+
+    @staticmethod
+    def parse_inbound_reality_obj(inbound_id: int, obj: dict[str, Any]) -> XUIInboundRealityInfo:
+        """Извлекает реальные serverNames (SNI), publicKey, shortId и port из JSON инбаунда 3X-UI."""
+        port = int(obj.get("port", 443) or 443)
+        remark = str(obj.get("remark", "") or "")
+        stream_raw = obj.get("streamSettings", "{}")
+        if isinstance(stream_raw, str):
+            try:
+                stream = json.loads(stream_raw) if stream_raw.strip() else {}
+            except Exception:
+                stream = {}
+        elif isinstance(stream_raw, dict):
+            stream = stream_raw
+        else:
+            stream = {}
+
+        reality = stream.get("realitySettings") or {}
+        if isinstance(reality, str):
+            try:
+                reality = json.loads(reality)
+            except Exception:
+                reality = {}
+
+        inner_settings = reality.get("settings") or {}
+        if isinstance(inner_settings, str):
+            try:
+                inner_settings = json.loads(inner_settings)
+            except Exception:
+                inner_settings = {}
+
+        raw_sni = reality.get("serverNames") or inner_settings.get("serverNames") or []
+        if isinstance(raw_sni, str):
+            server_names = [s.strip() for s in raw_sni.split(",") if s.strip()]
+        elif isinstance(raw_sni, list):
+            server_names = [str(s).strip() for s in raw_sni if str(s).strip()]
+        else:
+            server_names = []
+
+        public_key = str(
+            inner_settings.get("publicKey")
+            or reality.get("publicKey")
+            or inner_settings.get("pbk")
+            or ""
+        ).strip()
+
+        raw_sids = reality.get("shortIds") or inner_settings.get("shortIds") or []
+        short_id = ""
+        if isinstance(raw_sids, list):
+            non_empty = [str(s).strip() for s in raw_sids if str(s).strip()]
+            short_id = non_empty[0] if non_empty else ""
+        elif isinstance(raw_sids, str):
+            short_id = raw_sids.strip()
+        if not short_id:
+            short_id = str(reality.get("shortId") or inner_settings.get("shortId") or "").strip()
+
+        fingerprint = str(
+            inner_settings.get("fingerprint")
+            or reality.get("fingerprint")
+            or "chrome"
+        ).strip()
+        spider_x = str(
+            inner_settings.get("spiderX")
+            or reality.get("spiderX")
+            or "/"
+        ).strip()
+
+        return XUIInboundRealityInfo(
+            inbound_id=inbound_id,
+            port=port,
+            server_names=server_names,
+            public_key=public_key,
+            short_id=short_id,
+            fingerprint=fingerprint,
+            spider_x=spider_x,
+            remark=remark,
+        )
+
+    async def get_inbound_reality_info(self, inbound_id: int) -> XUIInboundRealityInfo | None:
+        """
+        Считывает актуальные настройки инбаунда (port, serverNames, publicKey, shortId) напрямую из 3X-UI,
+        чтобы исключить рассинхрон между панелью и выдаваемыми профилями.
+        """
+        for method in ("GET", "POST"):
+            try:
+                data = await self._request(method, f"panel/api/inbounds/get/{inbound_id}")
+                if data.get("success") and isinstance(data.get("obj"), dict):
+                    return self.parse_inbound_reality_obj(inbound_id, data["obj"])
+            except Exception as exc:
+                logger.debug(
+                    "Попытка %s panel/api/inbounds/get/%s не удалась: %s",
+                    method,
+                    inbound_id,
+                    exc,
+                )
+        return None
 
     async def get_client_traffics(self, email: str) -> XUIClientTraffic | None:
         """Получает статистику трафика конкретного клиента по его email из 3X-UI."""

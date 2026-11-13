@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     XUI_USERNAME: str = Field(default="admin")
     XUI_PASSWORD: str = Field(default="admin")
     XUI_INBOUND_ID: int = Field(default=1)
+    XUI_MOBILE_INBOUND_ID: int | None = Field(default=None)
     XUI_SUB_BASE_URL: str = Field(default="https://127.0.0.1:2096/sub")
     XUI_VERIFY_SSL: bool = Field(default=False)
     XUI_SERVER_NAME: str = Field(default="🇳🇱 Нидерланды (VLESS Reality)")
@@ -107,10 +108,10 @@ class Settings(BaseSettings):
             return v
         return None
 
-    @field_validator("ADMIN_CHAT_ID", mode="before")
+    @field_validator("ADMIN_CHAT_ID", "XUI_MOBILE_INBOUND_ID", mode="before")
     @classmethod
-    def parse_admin_chat_id(cls, v: object) -> int | None:
-        if v is None or v == "" or (isinstance(v, str) and v.lower() == "none"):
+    def parse_optional_int(cls, v: object) -> int | None:
+        if v is None or v == "" or (isinstance(v, str) and v.strip().lower() in ("", "none", "null")):
             return None
         return int(v)
 

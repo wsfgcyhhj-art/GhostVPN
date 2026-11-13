@@ -40,7 +40,7 @@ from app.services.vpn import (
     calculate_extra_device_price,
     calculate_plan_renewal_price_with_slots,
 )
-from app.services.xui.client import XUIClient, XUIClientTraffic
+from app.services.xui.client import XUIClient, XUIClientTraffic, XUIInboundRealityInfo
 from app.tasks.scheduler import (
     cleanup_stale_xui_clients,
     create_and_send_database_backup,
@@ -337,3 +337,134 @@ async def test_workers_ip_violation_retention_cleanup_and_backup(
         backup_ok = await create_and_send_database_backup(bot=mock_bot, target_chat_id=12345)
         assert backup_ok is True
         mock_bot.send_document.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_dual_reality_inbounds_sync_and_mobile_multiprofile_formats(
+    db_session: AsyncSession,
+) -> None:
+    import base64
+    from urllib.parse import unquote
+
+    async def override_get_db():
+        yield db_session
+
+    app.dependency_overrides[get_db_session] = override_get_db
+    transport = ASGITransport(app=app)
+
+    old_mob_id = settings.XUI_MOBILE_INBOUND_ID
+    object.__setattr__(settings, "XUI_MOBILE_INBOUND_ID", 2)
+
+    try:
+        repo = Repository(db_session)
+        user, _ = await repo.get_or_create_user(telegram_id=910500, username="lte_dual_user")
+
+        mock_xui = AsyncMock(spec=XUIClient)
+
+        async def fake_get_inbound_info(inbound_id: int) -> XUIInboundRealityInfo:
+            if inbound_id == 1:
+                return XUIInboundRealityInfo(
+                    inbound_id=1,
+                    port=443,
+                    server_names=["ya.ru", "yandex.ru"],
+                    public_key="PBK_PRIMARY_111",
+                    short_id="ab11",
+                    fingerprint="chrome",
+                )
+            return XUIInboundRealityInfo(
+                inbound_id=2,
+                port=8443,
+                server_names=["vk.com", "st.userapi.com"],
+                public_key="PBK_RESERVE_222",
+                short_id="cd22",
+                fingerprint="ios",
+            )
+
+        mock_xui.get_inbound_reality_info.side_effect = fake_get_inbound_info
+        vpn = VPNService(db_session, xui_client_override=mock_xui)
+
+        # 1. Создание подписки синхронно вызывает add_client в inbound #1 и inbound #2 с одинаковыми uuid/subId/email
+        sub = await vpn.grant_or_extend_subscription(user, days=30)
+        assert mock_xui.add_client.await_count == 2
+        call1 = mock_xui.add_client.await_args_list[0].kwargs
+        call2 = mock_xui.add_client.await_args_list[1].kwargs
+        assert call1["inbound_id"] == 1
+        assert call2["inbound_id"] == 2
+        assert call1["client_uuid"] == call2["client_uuid"] == sub.xui_client_uuid
+        assert call1["sub_id"] == call2["sub_id"] == sub.sub_id
+        assert call1["email"] == call2["email"] == sub.xui_email
+        assert call1["expiry_time_ms"] == call2["expiry_time_ms"]
+
+        # 2. Докупка слота устройства обновляет limit_ip в обоих инбаундах
+        mock_xui.update_client.reset_mock()
+        await vpn.add_extra_device_slot(user, slots=1)
+        assert mock_xui.update_client.await_count == 2
+        assert mock_xui.update_client.await_args_list[0].kwargs["inbound_id"] == 1
+        assert mock_xui.update_client.await_args_list[1].kwargs["inbound_id"] == 2
+        assert mock_xui.update_client.await_args_list[1].kwargs["limit_ip"] == 4
+
+        # 3. Блокировка/разблокировка и перевыпуск ключа синхронизируют оба инбаунда
+        mock_xui.update_client.reset_mock()
+        await vpn.set_client_enabled(sub, False)
+        assert mock_xui.update_client.await_count == 2
+        assert mock_xui.update_client.await_args_list[1].kwargs["enable"] is False
+        await vpn.set_client_enabled(sub, True)
+
+        mock_xui.add_client.reset_mock()
+        mock_xui.delete_client_by_uuid.reset_mock()
+        sub = await vpn.reissue_key(user, force_by_admin=True)
+        assert mock_xui.delete_client_by_uuid.await_count == 2
+        assert mock_xui.add_client.await_count == 2
+
+        # 4. Проверка смарт-эндпоинта GET /sub/mobile/{sub_id} (JSON, YAML, Base64)
+        with patch("app.services.vpn.XUIClient.from_server", return_value=mock_xui):
+            async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+                # 4a. JSON (Happ / v2rayTun / Hiddify)
+                resp_json = await client.get(
+                    f"/sub/mobile/{sub.sub_id}",
+                    headers={"User-Agent": "Happ/1.4.0 iOS"},
+                )
+                assert resp_json.status_code == 200
+                data = resp_json.json()
+                assert len(data["profiles"]) == 2
+                p1, p2 = data["profiles"][0], data["profiles"][1]
+                assert p1["name"] == "🇳🇱 GhostVPN • LTE Основной (Yandex SNI + Fragment)"
+                assert p2["name"] == "🇳🇱 GhostVPN • LTE Резерв (VK SNI + Fragment)"
+                assert p1["port"] == 443 and p1["publicKey"] == "PBK_PRIMARY_111" and p1["shortId"] == "ab11"
+                assert p1["sni"] == "ya.ru" and p1["fingerprint"] == "chrome"
+                assert p2["port"] == 8443 and p2["publicKey"] == "PBK_RESERVE_222" and p2["shortId"] == "cd22"
+                assert p2["sni"] == "vk.com" and p2["fingerprint"] == "ios"
+                assert p1["fragment"] == {
+                    "enabled": True,
+                    "packets": "tlshello",
+                    "length": "10-20",
+                    "interval": "10-15",
+                }
+                assert p1["ip_strategy"] == "UseIPv4" and p1["prefer_ipv4"] is True
+
+                # 4b. YAML (Clash / Mihomo User-Agent)
+                resp_yaml = await client.get(
+                    f"/sub/mobile/{sub.sub_id}",
+                    headers={"User-Agent": "ClashMetaForAndroid/2.10"},
+                )
+                assert resp_yaml.status_code == 200
+                assert "text/yaml" in resp_yaml.headers["content-type"]
+                assert "🇳🇱 GhostVPN • LTE Основной (Yandex SNI + Fragment)" in resp_yaml.text
+                assert "🇳🇱 GhostVPN • LTE Резерв (VK SNI + Fragment)" in resp_yaml.text
+                assert 'packets: "tlshello"' in resp_yaml.text
+                assert "PBK_RESERVE_222" in resp_yaml.text
+
+                # 4c. Base64 (Shadowrocket / v2rayN User-Agent)
+                resp_b64 = await client.get(
+                    f"/sub/mobile/{sub.sub_id}",
+                    headers={"User-Agent": "Shadowrocket/2.2.40"},
+                )
+                assert resp_b64.status_code == 200
+                decoded_uris = unquote(base64.b64decode(resp_b64.text).decode("utf-8"))
+                assert "🇳🇱 GhostVPN • LTE Основной (Yandex SNI + Fragment)" in decoded_uris
+                assert "🇳🇱 GhostVPN • LTE Резерв (VK SNI + Fragment)" in decoded_uris
+                assert "pbk=PBK_PRIMARY_111" in decoded_uris
+                assert "pbk=PBK_RESERVE_222" in decoded_uris
+    finally:
+        object.__setattr__(settings, "XUI_MOBILE_INBOUND_ID", old_mob_id)
+        app.dependency_overrides.clear()
