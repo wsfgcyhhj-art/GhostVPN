@@ -45,6 +45,14 @@ class TransactionStatus(str, enum.Enum):
     CANCELED = "CANCELED"
 
 
+class TransactionType(str, enum.Enum):
+    SUBSCRIPTION = "SUBSCRIPTION"
+    TRIAL = "TRIAL"
+    EXTRA_DEVICE = "EXTRA_DEVICE"
+    AUTO_RENEW = "AUTO_RENEW"
+    TOPUP = "TOPUP"
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -52,6 +60,7 @@ class User(Base):
     telegram_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True, nullable=False)
     username: Mapped[Optional[str]] = mapped_column(String(128), index=True, nullable=True)
     full_name: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    language: Mapped[str] = mapped_column(String(8), default="ru", nullable=False)
 
     referrer_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
@@ -61,6 +70,7 @@ class User(Base):
     )
     pending_discount_percent: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     has_used_trial: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    auto_renew: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     is_banned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
@@ -118,19 +128,35 @@ class Subscription(Base):
     server_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("servers.id", ondelete="RESTRICT"), nullable=False
     )
+    current_plan_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("plans.id", ondelete="SET NULL"), nullable=True
+    )
     xui_client_uuid: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     xui_email: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
     sub_id: Mapped[str] = mapped_column(String(32), unique=True, index=True, nullable=False)
     limit_ip: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
+    extra_devices: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    used_traffic_bytes: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    online_ips_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    ip_violations_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
     expires_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), index=True, nullable=False
     )
     is_trial: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True, nullable=False)
+    deleted_from_xui: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     notified_3d: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     notified_1d: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     notified_expired: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    notified_onboarding: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    notified_winback: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    auto_renew_attempted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
     last_key_reset_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -152,6 +178,25 @@ class Subscription(Base):
         exp = self.expires_at if self.expires_at.tzinfo else self.expires_at.replace(tzinfo=timezone.utc)
         return self.is_active and exp > now
 
+    @property
+    def used_traffic_gb(self) -> float:
+        return round(float(self.used_traffic_bytes or 0) / (1024**3), 2)
+
+    @property
+    def days_left(self) -> int:
+        now = utcnow()
+        exp = self.expires_at if self.expires_at.tzinfo else self.expires_at.replace(tzinfo=timezone.utc)
+        if exp <= now:
+            return 0
+        return max(0, int((exp - now).total_seconds() // 86400) + 1)
+
+    @property
+    def total_period_days(self) -> int:
+        start = self.started_at if self.started_at and self.started_at.tzinfo else utcnow()
+        exp = self.expires_at if self.expires_at.tzinfo else self.expires_at.replace(tzinfo=timezone.utc)
+        diff = int((exp - start).total_seconds() // 86400)
+        return max(3, diff)
+
 
 class Transaction(Base):
     __tablename__ = "transactions"
@@ -160,17 +205,27 @@ class Transaction(Base):
     user_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
     )
-    plan_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("plans.id", ondelete="RESTRICT"), nullable=False
+    plan_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("plans.id", ondelete="RESTRICT"), nullable=True
+    )
+    tx_type: Mapped[TransactionType] = mapped_column(
+        Enum(TransactionType, native_enum=False),
+        default=TransactionType.SUBSCRIPTION,
+        nullable=False,
     )
     provider: Mapped[PaymentProviderType] = mapped_column(
         Enum(PaymentProviderType, native_enum=False), nullable=False
+    )
+    currency: Mapped[str] = mapped_column(String(16), default="RUB", nullable=False)
+    amount_currency: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), default=Decimal("0.00"), nullable=False
     )
     amount_rub: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
     balance_used_rub: Mapped[Decimal] = mapped_column(
         Numeric(10, 2), default=Decimal("0.00"), nullable=False
     )
     discount_percent: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    extra_devices_qty: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     external_id: Mapped[Optional[str]] = mapped_column(
         String(128), unique=True, index=True, nullable=True
     )
@@ -187,7 +242,7 @@ class Transaction(Base):
     paid_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     user: Mapped["User"] = relationship("User", back_populates="transactions", lazy="selectin")
-    plan: Mapped["Plan"] = relationship("Plan", lazy="selectin")
+    plan: Mapped[Optional["Plan"]] = relationship("Plan", lazy="selectin")
 
 
 class PromoCode(Base):
@@ -221,3 +276,20 @@ class PromoUsage(Base):
     used_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )
+
+    promocode: Mapped["PromoCode"] = relationship("PromoCode", lazy="selectin")
+
+
+class MediaCache(Base):
+    __tablename__ = "media_cache"
+    __table_args__ = (UniqueConstraint("banner_key", "lang", name="uq_banner_key_lang"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    banner_key: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    lang: Mapped[str] = mapped_column(String(8), default="ru", nullable=False)
+    file_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    telegram_file_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+

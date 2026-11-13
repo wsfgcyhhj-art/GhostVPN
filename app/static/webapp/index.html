@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>GhostVPN // Ghostface Edition</title>
+  <link rel="icon" type="image/png" href="/static/images/ghostface_base.png" />
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    :root {
+      --bg-obsidian: #070709;
+      --bg-card: #111218;
+      --bg-card-alt: #181a24;
+      --neon-red: #FF1E42;
+      --neon-red-glow: rgba(255, 30, 66, 0.35);
+      --ghost-white: #F8F9FA;
+      --text-muted: #94A3B8;
+      --green-online: #22C55E;
+      --border-hud: #262938;
+    }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    body {
+      margin: 0;
+      padding: 16px 14px 36px;
+      background-color: var(--bg-obsidian);
+      background-image:
+        radial-gradient(circle at 50% 0%, rgba(255, 30, 66, 0.14), transparent 60%),
+        linear-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+      background-size: 100% 100%, 32px 32px, 32px 32px;
+      color: var(--ghost-white);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      min-height: 100vh;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 14px;
+      background: var(--bg-card);
+      border: 1px solid var(--neon-red);
+      box-shadow: 0 0 18px var(--neon-red-glow);
+      border-radius: 16px;
+      margin-bottom: 16px;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .mascot-avatar {
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      border: 2px solid var(--neon-red);
+      box-shadow: 0 0 12px var(--neon-red);
+      object-fit: cover;
+      background: #000;
+    }
+    .brand-title {
+      font-size: 17px;
+      font-weight: 800;
+      letter-spacing: 0.6px;
+      text-shadow: 1px 0 0 var(--neon-red);
+    }
+    .brand-sub {
+      font-size: 11px;
+      color: var(--neon-red);
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    .srv-pill {
+      background: rgba(34, 197, 94, 0.12);
+      border: 1px solid rgba(34, 197, 94, 0.4);
+      color: var(--green-online);
+      font-size: 11px;
+      font-weight: 700;
+      padding: 5px 10px;
+      border-radius: 999px;
+    }
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-hud);
+      border-radius: 16px;
+      padding: 16px;
+      margin-bottom: 14px;
+      position: relative;
+      overflow: hidden;
+    }
+    .card-title {
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--neon-red);
+      font-weight: 700;
+      margin: 0 0 10px;
+    }
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+    .stat-box {
+      background: var(--bg-card-alt);
+      border: 1px solid var(--border-hud);
+      border-radius: 12px;
+      padding: 10px 8px;
+      text-align: center;
+    }
+    .stat-val {
+      font-size: 16px;
+      font-weight: 800;
+      color: var(--ghost-white);
+    }
+    .stat-lbl {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 3px;
+    }
+    .progress-wrap {
+      background: #0a0b0e;
+      border-radius: 999px;
+      height: 10px;
+      border: 1px solid var(--border-hud);
+      overflow: hidden;
+      margin: 8px 0 6px;
+    }
+    .progress-bar {
+      background: linear-gradient(90deg, #FF1E42, #ff5e78);
+      height: 100%;
+      width: 0%;
+      transition: width 0.4s ease;
+    }
+    .sub-box {
+      background: #08090c;
+      border: 1px dashed var(--neon-red);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-family: monospace;
+      font-size: 12px;
+      color: #f1f5f9;
+      word-break: break-all;
+      margin-bottom: 10px;
+    }
+    .btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      width: 100%;
+      padding: 13px 14px;
+      border-radius: 12px;
+      border: none;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+      text-decoration: none;
+      transition: transform 0.12s ease, opacity 0.15s ease;
+      margin-bottom: 8px;
+    }
+    .btn:active { transform: scale(0.98); }
+    .btn-neon {
+      background: var(--neon-red);
+      color: #fff;
+      box-shadow: 0 4px 16px var(--neon-red-glow);
+    }
+    .btn-dark {
+      background: var(--bg-card-alt);
+      color: var(--ghost-white);
+      border: 1px solid var(--border-hud);
+    }
+    .apps-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      margin-top: 6px;
+    }
+    .plan-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: var(--bg-card-alt);
+      border: 1px solid var(--border-hud);
+      border-radius: 12px;
+      padding: 12px;
+      margin-bottom: 8px;
+    }
+    .plan-name { font-weight: 700; font-size: 14px; }
+    .plan-meta { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+    .plan-buy {
+      background: var(--neon-red);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-weight: 700;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 0;
+    }
+    .toast {
+      position: fixed;
+      bottom: 18px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--neon-red);
+      color: #fff;
+      padding: 10px 18px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 700;
+      display: none;
+      z-index: 999;
+      box-shadow: 0 8px 20px rgba(0,0,0,0.6);
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="brand">
+      <img class="mascot-avatar" src="/static/images/ghostface_base.png" alt="Ghostface" />
+      <div>
+        <div class="brand-title">GHOSTVPN</div>
+        <div class="brand-sub">// Твоя тень в сети</div>
+      </div>
+    </div>
+    <div class="srv-pill" id="srvStatus">🇳🇱 500 Mbps</div>
+  </div>
+
+  <!-- Статус защиты -->
+  <div class="card">
+    <div class="card-title">🛡 Статус твоей защиты</div>
+    <div class="stats-grid">
+      <div class="stat-box">
+        <div class="stat-val" id="daysVal">—</div>
+        <div class="stat-lbl">Остаток дн.</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-val" id="trafficVal">0 ГБ</div>
+        <div class="stat-lbl">Трафик</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-val" id="devicesVal">0 / 3</div>
+        <div class="stat-lbl">Устройства</div>
+      </div>
+    </div>
+    <div class="progress-wrap">
+      <div class="progress-bar" id="daysProgress"></div>
+    </div>
+    <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-muted);">
+      <span id="subStatusText">Проверка статуса...</span>
+      <span>Баланс: <b style="color:#fff;" id="balanceVal">0 ₽</b></span>
+    </div>
+  </div>
+
+  <!-- Подключение в 1 тап -->
+  <div class="card">
+    <div class="card-title">⚡ Подключение в 1 клик</div>
+    <div class="sub-box" id="subUrlBox">Активируй подписку или триал за 1 ₽ ниже</div>
+    <button class="btn btn-neon" onclick="copySubUrl()">📋 Скопировать ссылку подписки</button>
+    <div class="apps-grid">
+      <button class="btn btn-dark" onclick="openApp('happ')">📲 Happ</button>
+      <button class="btn btn-dark" onclick="openApp('v2raytun')">📲 v2rayTun</button>
+      <button class="btn btn-dark" onclick="openApp('hiddify')">📲 Hiddify</button>
+    </div>
+    <div class="toggle-row" style="margin-top:8px;">
+      <span style="font-size:12px;color:var(--text-muted);">📶 Режим обхода мобильных глушилок (TLS Fragment)</span>
+      <input type="checkbox" id="mobileModeToggle" onchange="updateSubDisplay()" />
+    </div>
+  </div>
+
+  <!-- Магазин тарифов -->
+  <div class="card">
+    <div class="card-title">🔥 Тарифы и Продление</div>
+    <div style="margin-bottom:10px;display:flex;gap:6px;">
+      <select id="payProvider" style="width:100%;padding:10px;border-radius:10px;background:var(--bg-card-alt);color:#fff;border:1px solid var(--border-hud);font-weight:600;">
+        <option value="RUB_GATEWAY">💳 СБП / Карта РФ (Platega)</option>
+        <option value="STARS">⭐️ Telegram Stars</option>
+        <option value="CRYPTOBOT">💎 CryptoBot (USDT / TON)</option>
+      </select>
+    </div>
+    <div id="plansContainer">Загрузка тарифов...</div>
+  </div>
+
+  <!-- Автопродление и Рефералка -->
+  <div class="card">
+    <div class="card-title">🎁 Партнёрская сеть (+15%)</div>
+    <p style="font-size:12px;color:var(--text-muted);margin:0 0 10px;">
+      Делись ссылкой с друзьями — 15% с каждой их оплаты начисляется тебе в рублях на баланс!
+    </p>
+    <button class="btn btn-dark" onclick="copyRefLink()">🔗 Скопировать реферальную ссылку</button>
+  </div>
+
+  <div class="toast" id="toastMsg">Скопировано!</div>
+
+  <script>
+    const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
+    if (tg) {
+      tg.ready();
+      tg.expand();
+    }
+
+    let stateData = {
+      sub_id: null,
+      sub_url: "",
+      mobile_sub_url: "",
+      ref_link: "",
+      plans: []
+    };
+
+    function showToast(text) {
+      const el = document.getElementById("toastMsg");
+      el.textContent = text;
+      el.style.display = "block";
+      setTimeout(() => { el.style.display = "none"; }, 2200);
+    }
+
+    function updateSubDisplay() {
+      const isMobile = document.getElementById("mobileModeToggle").checked;
+      const box = document.getElementById("subUrlBox");
+      if (!stateData.sub_url) {
+        box.textContent = "Нет активного ключа — выбери тариф ниже";
+        return;
+      }
+      box.textContent = isMobile ? stateData.mobile_sub_url : stateData.sub_url;
+    }
+
+    function copySubUrl() {
+      const isMobile = document.getElementById("mobileModeToggle").checked;
+      const target = isMobile ? stateData.mobile_sub_url : stateData.sub_url;
+      if (!target) {
+        showToast("Сначала активируй подписку!");
+        return;
+      }
+      navigator.clipboard.writeText(target).then(() => showToast("✅ Ссылка подписки скопирована!"));
+    }
+
+    function copyRefLink() {
+      if (!stateData.ref_link) return;
+      navigator.clipboard.writeText(stateData.ref_link).then(() => showToast("✅ Реферальная ссылка скопирована!"));
+    }
+
+    function openApp(appName) {
+      if (!stateData.sub_id) {
+        showToast("Сначала оформи подписку!");
+        return;
+      }
+      const isMobile = document.getElementById("mobileModeToggle").checked;
+      const url = `/connect/${appName}/${stateData.sub_id}` + (isMobile ? "?mode=mobile" : "");
+      window.location.href = url;
+    }
+
+    async function buyPlan(planId) {
+      const provider = document.getElementById("payProvider").value;
+      const initData = tg ? tg.initData : "";
+      try {
+        const resp = await fetch("/api/webapp/pay", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Telegram-Init-Data": initData
+          },
+          body: JSON.stringify({ plan_id: planId, provider: provider })
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          showToast(data.detail || "Ошибка создания счёта");
+          return;
+        }
+        if (data.payment_url) {
+          if (tg && tg.openLink) {
+            tg.openLink(data.payment_url);
+          } else {
+            window.location.href = data.payment_url;
+          }
+        } else if (data.message) {
+          showToast(data.message);
+        }
+      } catch (e) {
+        showToast("Ошибка соединения с сервером");
+      }
+    }
+
+    async function loadDashboard() {
+      const initData = tg ? tg.initData : "";
+      try {
+        const resp = await fetch("/api/webapp/me", {
+          headers: { "X-Telegram-Init-Data": initData }
+        });
+        if (!resp.ok) {
+          document.getElementById("subStatusText").textContent = "Открой WebApp внутри Telegram-бота";
+          return;
+        }
+        const data = await resp.json();
+        stateData = data;
+        document.getElementById("balanceVal").textContent = `${data.balance_rub} ₽`;
+        document.getElementById("daysVal").textContent = `${data.days_left} дн.`;
+        document.getElementById("trafficVal").textContent = `${data.used_traffic_gb} ГБ`;
+        document.getElementById("devicesVal").textContent = `${data.online_ips} / ${data.limit_ip}`;
+        document.getElementById("subStatusText").textContent = data.is_active
+          ? `🟢 Активна до ${data.expires_str}`
+          : "⚪️ Подписка не активна";
+
+        const pct = data.total_days > 0 ? Math.min(100, Math.round((data.days_left / data.total_days) * 100)) : 0;
+        document.getElementById("daysProgress").style.width = `${pct}%`;
+        updateSubDisplay();
+
+        const container = document.getElementById("plansContainer");
+        container.innerHTML = "";
+        (data.plans || []).forEach(p => {
+          const row = document.createElement("div");
+          row.className = "plan-item";
+          row.innerHTML = `
+            <div>
+              <div class="plan-name">⚡ ${p.name}</div>
+              <div class="plan-meta">${p.days} дней • Безлимит</div>
+            </div>
+            <button class="plan-buy" onclick="buyPlan(${p.id})">${p.price_rub} ₽</button>
+          `;
+          container.appendChild(row);
+        });
+      } catch (e) {
+        document.getElementById("subStatusText").textContent = "Ошибка загрузки профиля";
+      }
+    }
+
+    loadDashboard();
+  </script>
+</body>
+</html>

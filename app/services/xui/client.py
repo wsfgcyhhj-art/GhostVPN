@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -30,6 +30,18 @@ class XUIServerStatus:
     mem_total_mb: float = 0.0
     xray_state: str = "unknown"
     uptime_seconds: int = 0
+    online_clients_count: int = 0
+
+
+@dataclass
+class XUIClientTraffic:
+    email: str
+    up_bytes: int = 0
+    down_bytes: int = 0
+    total_bytes: int = 0
+    enable: bool = True
+    expiry_time_ms: int = 0
+    online_ips: list[str] = field(default_factory=list)
 
 
 class XUIClient:
@@ -47,7 +59,7 @@ class XUIClient:
         web_base_path: str,
         username: str,
         password: str,
-        verify_ssl: bool = True,
+        verify_ssl: bool = False,
         timeout: float = 10.0,
         http_client: httpx.AsyncClient | None = None,
     ) -> None:
@@ -109,7 +121,6 @@ class XUIClient:
             resp.raise_for_status()
             token = self.extract_csrf_token(resp.text)
             if not token:
-                # Фоллбэк: если токен также пришёл в cookie (например, csrf_token / _csrf)
                 token = (
                     resp.cookies.get("csrf_token")
                     or resp.cookies.get("_csrf")
@@ -180,7 +191,6 @@ class XUIClient:
         except httpx.HTTPError as exc:
             raise XUIError(f"Сетевая ошибка при обращении к 3X-UI ({url}): {exc}") from exc
 
-        # Если сессия или CSRF-токен истекли (401 / 403 / редирект на HTML страницу логина)
         content_type = resp.headers.get("content-type", "")
         if resp.status_code in (401, 403) or "application/json" not in content_type.lower():
             if retry_auth:
@@ -310,8 +320,59 @@ class XUIClient:
             msg = str(data.get("msg", ""))
             raise XUIError(f"Ошибка delClient в 3X-UI: {msg}")
 
+    async def get_client_traffics(self, email: str) -> XUIClientTraffic | None:
+        """Получает статистику трафика конкретного клиента по его email из 3X-UI."""
+        try:
+            data = await self._request(
+                "GET",
+                f"panel/api/inbounds/getClientTraffics/{email}",
+            )
+            if not data.get("success") or not isinstance(data.get("obj"), dict):
+                return None
+            obj = data["obj"]
+            up_b = int(obj.get("up", 0) or 0)
+            down_b = int(obj.get("down", 0) or 0)
+            return XUIClientTraffic(
+                email=email,
+                up_bytes=up_b,
+                down_bytes=down_b,
+                total_bytes=up_b + down_b,
+                enable=bool(obj.get("enable", True)),
+                expiry_time_ms=int(obj.get("expiryTime", 0) or 0),
+            )
+        except Exception as exc:
+            logger.debug("Не удалось получить трафик клиента %s: %s", email, exc)
+            return None
+
+    async def get_online_clients(self) -> list[str]:
+        """Возвращает список email клиентов, находящихся сейчас онлайн в 3X-UI (`panel/api/inbounds/onlines`)."""
+        try:
+            data = await self._request("POST", "panel/api/inbounds/onlines")
+            if data.get("success") and isinstance(data.get("obj"), list):
+                return [str(x) for x in data["obj"]]
+        except Exception as exc:
+            logger.debug("Ошибка получения списка онлайн-клиентов 3X-UI: %s", exc)
+        return []
+
+    async def get_client_ips(self, email: str) -> list[str]:
+        """Возвращает список активных IP-адресов клиента (`panel/api/inbounds/clientIps/{email}`)."""
+        try:
+            data = await self._request("POST", f"panel/api/inbounds/clientIps/{email}")
+            if not data.get("success"):
+                return []
+            obj = data.get("obj")
+            if isinstance(obj, list):
+                return [str(ip).strip() for ip in obj if str(ip).strip()]
+            if isinstance(obj, str) and obj.strip() and obj.strip() != "No IP Record":
+                parts = [p.strip() for p in re.split(r"[,;\s\n]+", obj) if p.strip()]
+                return parts
+        except Exception as exc:
+            logger.debug("Не удалось получить IP клиента %s: %s", email, exc)
+        return []
+
     async def get_server_status(self) -> XUIServerStatus:
-        """Запрашивает CPU / RAM / состояние Xray из 3X-UI (`panel/api/server/status` или `server/status`)."""
+        """Запрашивает CPU / RAM / состояние Xray / онлайн из 3X-UI."""
+        online_emails = await self.get_online_clients()
         for path in ("panel/api/server/status", "server/status"):
             try:
                 data = await self._request("POST", path)
@@ -331,7 +392,8 @@ class XUIClient:
                         mem_total_mb=round(mem_total, 1),
                         xray_state=xray_state,
                         uptime_seconds=uptime,
+                        online_clients_count=len(online_emails),
                     )
             except Exception as exc:
                 logger.debug("Не удалось получить статус 3X-UI по пути %s: %s", path, exc)
-        return XUIServerStatus(online=False)
+        return XUIServerStatus(online=False, online_clients_count=len(online_emails))

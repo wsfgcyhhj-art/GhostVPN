@@ -8,6 +8,8 @@ from aiogram import Bot, F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (
+    BotCommand,
+    BufferedInputFile,
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -26,6 +28,7 @@ from app.bot.keyboards.admin import (
 )
 from app.bot.states import (
     AdminBroadcastState,
+    AdminMassCompensateState,
     AdminPlanState,
     AdminPromoCreateState,
     AdminSearchState,
@@ -34,7 +37,6 @@ from app.bot.utils import format_dt_msk
 from app.core.config import settings
 from app.core.logging import logger
 from app.db.models import (
-    Plan,
     PromoCode,
     PromoType,
     Subscription,
@@ -43,7 +45,8 @@ from app.db.models import (
 )
 from app.db.repositories import Repository
 from app.db.session import async_session_factory
-from app.services.vpn import VPNService
+from app.services.banner_generator import MASCOT_PATH
+from app.services.vpn import VPNService, datetime_to_ms
 from app.services.xui.client import XUIClient
 
 router = Router(name="admin")
@@ -63,10 +66,12 @@ async def build_dashboard_text(repo: Repository) -> str:
         try:
             st = await client.get_server_status()
             if st.online:
+                uptime_h = round(st.uptime_seconds / 3600, 1)
                 xui_line = (
-                    f"🟢 Онлайн (Xray: <b>{st.xray_state}</b>)\n"
+                    f"🟢 Онлайн (Xray: <b>{st.xray_state}</b>, аптайм: <b>{uptime_h} ч.</b>)\n"
                     f"• Нагрузка: CPU <b>{st.cpu_percent}%</b> | "
-                    f"RAM <b>{st.mem_used_mb:.0f} / {st.mem_total_mb:.0f} MB</b>"
+                    f"RAM <b>{st.mem_used_mb:.0f} / {st.mem_total_mb:.0f} MB</b>\n"
+                    f"• Сейчас онлайн клиентов: <b>{st.online_clients_count}</b>"
                 )
             else:
                 xui_line = "🟡 Панель доступна, метрики скрыты или офлайн"
@@ -75,42 +80,86 @@ async def build_dashboard_text(repo: Repository) -> str:
         finally:
             await client.close()
 
+    usdt_est = (
+        (stats["rev_crypto_rub_30d"] / Decimal(str(settings.USDT_RUB_RATE))).quantize(
+            Decimal("0.01")
+        )
+        if settings.USDT_RUB_RATE > 0
+        else Decimal("0.00")
+    )
+    stars_est = (
+        int(float(stats["rev_stars_rub_30d"]) / settings.STARS_RUB_RATE)
+        if settings.STARS_RUB_RATE > 0
+        else 0
+    )
+
     return (
-        f"🛠 <b>Админ-панель GhostVPN</b>\n\n"
-        f"👥 <b>Аудитория:</b>\n"
-        f"• Всего пользователей: <b>{stats['total_users']}</b>\n"
+        f"🛠 <b>Админ-панель GhostVPN (Ghostface Edition)</b>\n\n"
+        f"👥 <b>Аудитория и Воронка:</b>\n"
+        f"• Всего пользователей: <b>{stats['total_users']}</b> "
+        f"(+<b>{stats['new_users_today']}</b> сегодня / +<b>{stats['new_users_7d']}</b> за 7 дн.)\n"
         f"• Платных активных подписок: <b>{stats['active_subs']}</b>\n"
-        f"• Активных триалов: <b>{stats['trial_subs']}</b>\n\n"
-        f"💰 <b>Выручка:</b>\n"
+        f"• На триале за 1 ₽ сейчас: <b>{stats['trial_subs']}</b>\n"
+        f"• Конверсия из триала в покупку: <b>{stats['conversion_rate']}%</b> "
+        f"({stats['converted_from_trial']} из {stats['total_trial_users']})\n\n"
+        f"💰 <b>Выручка (всего):</b>\n"
         f"• За сегодня: <b>{stats['rev_today']} ₽</b>\n"
+        f"• За 7 дней: <b>{stats['rev_7d']} ₽</b>\n"
         f"• За 30 дней: <b>{stats['rev_month']} ₽</b>\n"
         f"• За всё время: <b>{stats['rev_total']} ₽</b>\n\n"
-        f"🖥 <b>Сервер 3X-UI ({server.name if server else 'N/A'}):</b>\n"
-        f"• Статус: {xui_line}"
+        f"💳 <b>Разбивка по шлюзам за 30 дней:</b>\n"
+        f"• СБП / Карты (Platega): <b>{stats['rev_rub_gw_30d']} ₽</b>\n"
+        f"• CryptoBot: <b>{stats['rev_crypto_rub_30d']} ₽</b> (~<b>{usdt_est} USDT</b>)\n"
+        f"• Telegram Stars: <b>{stats['rev_stars_rub_30d']} ₽</b> (~<b>{stars_est} ⭐️</b>)\n\n"
+        f"🖥 <b>VPS 3X-UI ({server.name if server else 'N/A'}):</b>\n"
+        f"• {xui_line}"
     )
 
 
-def format_admin_user_profile(u: User) -> str:
+async def format_admin_user_profile(repo: Repository, u: User) -> str:
     sub = u.subscription
     if sub:
         sub_info = (
             f"• Статус: {'🟢 Активна' if sub.is_currently_valid else '🔴 Истекла/Откл.'}\n"
             f"• До: <b>{format_dt_msk(sub.expires_at)}</b>\n"
+            f"• Лимит устройств: <b>{sub.limit_ip} устр.</b> (доп. +{sub.extra_devices})\n"
+            f"• Трафик: <b>{sub.used_traffic_gb} ГБ</b> | Нарушений IP: <b>{sub.ip_violations_count}</b>\n"
             f"• Sub ID: <code>{sub.sub_id}</code>\n"
+            f"• Email 3X-UI: <code>{sub.xui_email}</code>\n"
             f"• UUID: <code>{sub.xui_client_uuid}</code>\n"
             f"• Ссылка: <code>{sub.subscription_url}</code>"
         )
     else:
         sub_info = "• Подписка: отсутствует"
 
+    txs = await repo.get_user_transactions(u.id, limit=5)
+    if txs:
+        tx_lines = [
+            f"  #{tx.id} [{tx.status.value}] {tx.provider.value}: {tx.amount_rub} ₽ ({tx.tx_type.value})"
+            for tx in txs
+        ]
+        tx_block = "\n".join(tx_lines)
+    else:
+        tx_block = "  Нет платежей"
+
+    promos = await repo.get_user_promo_usages(u.id)
+    if promos:
+        promo_block = ", ".join(
+            f"<code>{pu.promocode.code}</code>" for pu in promos if pu.promocode
+        )
+    else:
+        promo_block = "Нет"
+
     return (
-        f"👤 <b>Профиль пользователя #{u.id}</b>\n\n"
-        f"• Telegram ID: <code>{u.telegram_id}</code>\n"
+        f"👤 <b>CRM-карточка клиента #{u.id}</b>\n\n"
+        f"• Telegram ID: <code>{u.telegram_id}</code> (Язык: <b>{u.language.upper()}</b>)\n"
         f"• Username: @{u.username or 'нет'} ({u.full_name or ''})\n"
-        f"• Баланс: <b>{u.balance_rub} ₽</b>\n"
-        f"• Триал использован: <b>{'Да' if u.has_used_trial else 'Нет'}</b>\n"
-        f"• Бан: <b>{'⛔ ДА' if u.is_banned else 'Нет'}</b>\n\n"
-        f"🔑 <b>Данные 3X-UI:</b>\n{sub_info}"
+        f"• Внутренний баланс: <b>{u.balance_rub} ₽</b>\n"
+        f"• Автопродление: <b>{'ВКЛ' if u.auto_renew else 'ВЫКЛ'}</b> | Триал: <b>{'Да' if u.has_used_trial else 'Нет'}</b>\n"
+        f"• Бан: <b>{'⛔ ЗАБЛОКИРОВАН' if u.is_banned else 'Нет'}</b>\n\n"
+        f"🔑 <b>Подписка 3X-UI:</b>\n{sub_info}\n\n"
+        f"💳 <b>Последние платежи:</b>\n{tx_block}\n\n"
+        f"🎟 <b>Активированные промокоды:</b> {promo_block}"
     )
 
 
@@ -139,13 +188,147 @@ async def cb_admin_home(
     await state.clear()
     text = await build_dashboard_text(repo)
     if callback.message:
+        try:
+            await callback.message.edit_text(
+                text, reply_markup=admin_home_kb(), parse_mode="HTML"
+            )
+        except Exception:
+            await callback.message.answer(
+                text, reply_markup=admin_home_kb(), parse_mode="HTML"
+            )
+    await callback.answer()
+
+
+# --- Синхронизация описания, команд и напоминание об аватаре Ghostface ---
+@router.callback_query(F.data == "admin:sync_bot_profile")
+async def cb_admin_sync_bot_profile(callback: CallbackQuery, bot: Bot) -> None:
+    if not is_admin_user(callback.from_user.id):
+        return
+    try:
+        await bot.set_my_commands(
+            commands=[
+                BotCommand(command="start", description="👻 Главное меню и личный кабинет"),
+                BotCommand(command="admin", description="🛠 Панель управления (для админов)"),
+            ]
+        )
+        await bot.set_my_short_description(
+            short_description="👻 GhostVPN — твоя цифровая тень в сети. VLESS Reality 500 Мбит/с, YouTube 4K и обход мобильных глушилок."
+        )
+        await bot.set_my_description(
+            description=(
+                "👻 Добро пожаловать в GhostVPN (Ghostface Edition)!\n\n"
+                "• 🇳🇱 Скоростной сервер в Нидерландах (до 500 Мбит/с)\n"
+                "• 🔥 Полный тест-драйв на 3 дня за 1 ₽\n"
+                "• 🛡 Обход блокировок и мобильных глушилок (TLS Fragment)\n"
+                "• 📱 Подключение в 1 клик на iPhone, Android, Windows и Mac\n\n"
+                "Нажми «Начать» (/start), чтобы забрать свой ключ!"
+            )
+        )
+    except Exception as exc:
+        logger.warning("Не удалось обновить описание бота через API: %s", exc)
+
+    mascot_status = "✅ Файл найден" if MASCOT_PATH.exists() else "⚠️ Используется встроенный фоллбэк"
+    if callback.message and MASCOT_PATH.exists():
+        photo = BufferedInputFile(MASCOT_PATH.read_bytes(), filename="ghostface_avatar.png")
+        await callback.message.answer_photo(
+            photo=photo,
+            caption=(
+                "👻 <b>Команды и описание бота успешно обновлены через Bot API!</b>\n\n"
+                f"• Исходник <code>app/static/images/ghostface_base.png</code>: <b>{mascot_status}</b>\n"
+                "• Напоминание: если аватарка самого бота в Telegram ещё не установлена, "
+                "сохрани эту картинку выше и отправь её в <code>@BotFather</code> → <code>/setuserpic</code>."
+            ),
+            parse_mode="HTML",
+        )
+    await callback.answer("Профиль бота синхронизирован!")
+
+
+# --- Ручной запуск бэкапа БД ---
+@router.callback_query(F.data == "admin:backup_now")
+async def cb_admin_backup_now(callback: CallbackQuery, bot: Bot) -> None:
+    if not is_admin_user(callback.from_user.id):
+        return
+    from app.tasks.scheduler import create_and_send_database_backup
+
+    ok = await create_and_send_database_backup(bot=bot, target_chat_id=callback.from_user.id)
+    if ok:
+        await callback.answer("📦 Архив бэкапа БД отправлен вам в личные сообщения!", show_alert=True)
+    else:
+        await callback.answer("Ошибка создания бэкапа.", show_alert=True)
+
+
+# --- Массовая компенсация бонусных дней всем активным ---
+@router.callback_query(F.data == "admin:mass_compensate")
+async def cb_admin_mass_compensate(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin_user(callback.from_user.id):
+        return
+    await state.set_state(AdminMassCompensateState.waiting_for_days)
+    if callback.message:
         await callback.message.edit_text(
-            text, reply_markup=admin_home_kb(), parse_mode="HTML"
+            "🎁 <b>Массовое начисление бонусных дней всем активным клиентам</b>\n\n"
+            "Введите положительное количество дней (например, <code>3</code>), которое нужно добавить "
+            "каждой активной подписке в БД и в панели 3X-UI (с отправкой уведомления пользователям):",
+            reply_markup=admin_home_kb(),
+            parse_mode="HTML",
         )
     await callback.answer()
 
 
-# --- User Management ---
+@router.message(AdminMassCompensateState.waiting_for_days)
+async def msg_admin_mass_compensate(
+    message: Message,
+    bot: Bot,
+    session: AsyncSession,
+    repo: Repository,
+    state: FSMContext,
+) -> None:
+    if not message.from_user or not is_admin_user(message.from_user.id):
+        return
+    try:
+        days_to_add = int((message.text or "").strip())
+        if days_to_add <= 0 or days_to_add > 365:
+            raise ValueError
+    except ValueError:
+        await message.answer("Введите целое число от 1 до 365.")
+        return
+
+    await state.clear()
+    active_subs = await repo.get_all_active_subscriptions()
+    vpn_service = VPNService(session)
+    updated_count = 0
+
+    for sub in active_subs:
+        user = await session.get(User, sub.user_id)
+        if user is None:
+            continue
+        try:
+            await vpn_service.grant_or_extend_subscription(user, days=days_to_add)
+            updated_count += 1
+            try:
+                await bot.send_message(
+                    chat_id=user.telegram_id,
+                    text=(
+                        f"🎁 <b>Подарок от команды GhostVPN!</b>\n\n"
+                        f"Мы начислили вам <b>+{days_to_add} бонусных дн.</b> к вашей текущей подписке.\n"
+                        f"Спасибо, что остаётесь с нами!"
+                    ),
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+            await asyncio.sleep(0.05)
+        except Exception as exc:
+            logger.warning("Ошибка массовой компенсации для user_id=%s: %s", user.id, exc)
+
+    await message.answer(
+        f"✅ <b>Массовая компенсация завершена!</b>\n"
+        f"Начислено <b>+{days_to_add} дн.</b> для <b>{updated_count}</b> активных подписок.",
+        reply_markup=admin_home_kb(),
+        parse_mode="HTML",
+    )
+
+
+# --- CRM User Management ---
 @router.callback_query(F.data == "admin:user_search")
 async def cb_admin_user_search(callback: CallbackQuery, state: FSMContext) -> None:
     if not is_admin_user(callback.from_user.id):
@@ -153,8 +336,8 @@ async def cb_admin_user_search(callback: CallbackQuery, state: FSMContext) -> No
     await state.set_state(AdminSearchState.waiting_for_query)
     if callback.message:
         await callback.message.edit_text(
-            "🔍 <b>Поиск пользователя</b>\n\n"
-            "Отправьте <code>telegram_id</code>, <code>@username</code> или <code>sub_id</code>:",
+            "🔍 <b>CRM Поиск клиента</b>\n\n"
+            "Отправьте <code>telegram_id</code>, <code>@username</code>, <code>sub_id</code> или <code>email</code> из 3X-UI (например, <code>tg_123456</code>):",
             reply_markup=admin_home_kb(),
             parse_mode="HTML",
         )
@@ -179,7 +362,7 @@ async def msg_admin_user_search(
 
     await state.clear()
     await message.answer(
-        format_admin_user_profile(target),
+        await format_admin_user_profile(repo, target),
         reply_markup=admin_user_manage_kb(target),
         parse_mode="HTML",
     )
@@ -230,7 +413,7 @@ async def msg_admin_u_days(
         await session.refresh(target)
         await message.answer(
             f"✅ Изменение срока подписки ({days_delta:+} дн.) синхронизировано с 3X-UI!\n\n"
-            + format_admin_user_profile(target),
+            + await format_admin_user_profile(repo, target),
             reply_markup=admin_user_manage_kb(target),
             parse_mode="HTML",
         )
@@ -239,6 +422,77 @@ async def msg_admin_u_days(
             f"⚠️ Ошибка синхронизации с 3X-UI: {exc}",
             reply_markup=admin_user_manage_kb(target),
         )
+
+
+@router.callback_query(F.data.startswith("admin:u_limit:"))
+async def cb_admin_u_limit(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin_user(callback.from_user.id):
+        return
+    uid = int((callback.data or "").split(":")[2])
+    await state.set_state(AdminSearchState.waiting_for_limit_ip)
+    await state.update_data(target_user_id=uid)
+    if callback.message:
+        await callback.message.edit_text(
+            "📱 Введите новый общий лимит устройств для клиента (от <code>1</code> до <code>15</code>):",
+            parse_mode="HTML",
+        )
+    await callback.answer()
+
+
+@router.message(AdminSearchState.waiting_for_limit_ip)
+async def msg_admin_u_limit(
+    message: Message,
+    session: AsyncSession,
+    repo: Repository,
+    state: FSMContext,
+) -> None:
+    if not message.from_user or not is_admin_user(message.from_user.id):
+        return
+    try:
+        new_limit = int((message.text or "").strip())
+        if new_limit < 1 or new_limit > 20:
+            raise ValueError
+    except ValueError:
+        await message.answer("Введите число от 1 до 20.")
+        return
+
+    data = await state.get_data()
+    target = await repo.get_user_by_id(int(data["target_user_id"]))
+    await state.clear()
+    if target is None or target.subscription is None:
+        await message.answer("У пользователя ещё нет подписки.", reply_markup=admin_home_kb())
+        return
+
+    sub = target.subscription
+    server = sub.server or await repo.get_active_server()
+    if server:
+        client = XUIClient.from_server(server)
+        try:
+            await client.update_client(
+                inbound_id=server.inbound_id,
+                client_uuid=sub.xui_client_uuid,
+                email=sub.xui_email,
+                sub_id=sub.sub_id,
+                expiry_time_ms=datetime_to_ms(sub.expires_at),
+                limit_ip=new_limit,
+                total_gb=0,
+                enable=sub.is_currently_valid,
+                tg_id=str(target.telegram_id),
+            )
+        finally:
+            await client.close()
+
+    sub.limit_ip = new_limit
+    sub.extra_devices = max(0, new_limit - settings.DEFAULT_LIMIT_IP)
+    await session.commit()
+    await session.refresh(target)
+
+    await message.answer(
+        f"✅ Лимит устройств изменён на {new_limit}!\n\n"
+        + await format_admin_user_profile(repo, target),
+        reply_markup=admin_user_manage_kb(target),
+        parse_mode="HTML",
+    )
 
 
 @router.callback_query(F.data.startswith("admin:u_bal:"))
@@ -280,7 +534,7 @@ async def msg_admin_u_bal(
     target.balance_rub = max(Decimal("0.00"), (target.balance_rub + delta).quantize(Decimal("0.01")))
     await session.commit()
     await message.answer(
-        f"✅ Баланс обновлён ({delta:+} ₽)!\n\n" + format_admin_user_profile(target),
+        f"✅ Баланс обновлён ({delta:+} ₽)!\n\n" + await format_admin_user_profile(repo, target),
         reply_markup=admin_user_manage_kb(target),
         parse_mode="HTML",
     )
@@ -306,7 +560,7 @@ async def cb_admin_u_reissue(
         if callback.message:
             await callback.message.edit_text(
                 "✅ Ключ пользователя принудительно перевыпущен!\n\n"
-                + format_admin_user_profile(target),
+                + await format_admin_user_profile(repo, target),
                 reply_markup=admin_user_manage_kb(target),
                 parse_mode="HTML",
             )
@@ -332,7 +586,7 @@ async def cb_admin_u_ban(
     await session.commit()
     if callback.message:
         await callback.message.edit_text(
-            format_admin_user_profile(target),
+            await format_admin_user_profile(repo, target),
             reply_markup=admin_user_manage_kb(target),
             parse_mode="HTML",
         )
@@ -360,7 +614,7 @@ async def cb_admin_u_toggle_sub(
         await session.refresh(target)
         if callback.message:
             await callback.message.edit_text(
-                format_admin_user_profile(target),
+                await format_admin_user_profile(repo, target),
                 reply_markup=admin_user_manage_kb(target),
                 parse_mode="HTML",
             )
@@ -568,7 +822,7 @@ async def msg_admin_promo_create(
     )
 
 
-# --- Broadcast (Рассылка с rate-limit 20 msg/sec) ---
+# --- Broadcast Constructor (текст, фото, видео, кружочки video_note + URL/callback кнопки) ---
 @router.callback_query(F.data == "admin:broadcast")
 async def cb_admin_broadcast(callback: CallbackQuery, state: FSMContext) -> None:
     if not is_admin_user(callback.from_user.id):
@@ -576,7 +830,7 @@ async def cb_admin_broadcast(callback: CallbackQuery, state: FSMContext) -> None
     await state.set_state(AdminBroadcastState.waiting_for_segment)
     if callback.message:
         await callback.message.edit_text(
-            "📢 <b>Рассылка сообщений (Broadcast)</b>\n\nВыберите сегмент получателей:",
+            "📢 <b>Конструктор рассылок (Broadcast)</b>\n\nВыберите сегмент получателей:",
             reply_markup=admin_broadcast_segment_kb(),
             parse_mode="HTML",
         )
@@ -592,7 +846,11 @@ async def cb_admin_bc_seg(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(AdminBroadcastState.waiting_for_content)
     if callback.message:
         await callback.message.edit_text(
-            "📝 Отправьте сообщение для рассылки (текст с HTML-разметкой или фото с подписью):",
+            "📝 Отправьте контент для рассылки:\n"
+            "• Обычный текст с HTML-разметкой\n"
+            "• Фото с подписью\n"
+            "• Видео с подписью\n"
+            "• Видеокружочек (Video Note)",
             parse_mode="HTML",
         )
     await callback.answer()
@@ -603,34 +861,92 @@ async def msg_admin_bc_content(message: Message, state: FSMContext) -> None:
     if not message.from_user or not is_admin_user(message.from_user.id):
         return
     photo_id = message.photo[-1].file_id if message.photo else None
+    video_id = message.video.file_id if message.video else None
+    video_note_id = message.video_note.file_id if message.video_note else None
     text = message.html_text or message.caption or ""
-    await state.update_data(photo_id=photo_id, text=text)
+    await state.update_data(
+        photo_id=photo_id,
+        video_id=video_id,
+        video_note_id=video_note_id,
+        text=text,
+    )
     await state.set_state(AdminBroadcastState.waiting_for_button)
     await message.answer(
-        "🔗 Хотите добавить инлайн URL-кнопку?\n"
-        "Отправьте в формате <code>Текст кнопки | https://...</code> или отправьте <code>-</code> без кнопки:",
+        "🔗 Хотите прикрепить кнопку к сообщению?\n"
+        "• Для внешней ссылки: <code>Текст кнопки | https://...</code>\n"
+        "• Для перехода к тарифам: <code>🔥 Выбрать тариф | plans:list</code>\n"
+        "• Для триала за 1 ₽: <code>🎁 Тест за 1 ₽ | trial:start</code>\n"
+        "• Или отправьте <code>-</code> без кнопки:",
         parse_mode="HTML",
     )
 
 
+def _build_broadcast_button(
+    btn_text: str | None, btn_target: str | None
+) -> InlineKeyboardMarkup | None:
+    if not btn_text or not btn_target:
+        return None
+    if btn_target.startswith(("http://", "https://", "tg://")):
+        return InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text=btn_text, url=btn_target)]]
+        )
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text=btn_text, callback_data=btn_target)]]
+    )
+
+
 @router.message(AdminBroadcastState.waiting_for_button)
-async def msg_admin_bc_button(message: Message, state: FSMContext) -> None:
+async def msg_admin_bc_button(message: Message, bot: Bot, state: FSMContext) -> None:
     if not message.from_user or not is_admin_user(message.from_user.id):
         return
     raw = (message.text or "").strip()
     btn_text: str | None = None
-    btn_url: str | None = None
+    btn_target: str | None = None
     if raw != "-" and "|" in raw:
         parts = [p.strip() for p in raw.split("|", 1)]
-        if len(parts) == 2 and parts[1].startswith(("http://", "https://", "tg://")):
-            btn_text, btn_url = parts[0], parts[1]
+        if len(parts) == 2 and parts[0] and parts[1]:
+            btn_text, btn_target = parts[0], parts[1]
 
-    await state.update_data(btn_text=btn_text, btn_url=btn_url)
+    await state.update_data(btn_text=btn_text, btn_target=btn_target)
     await state.set_state(AdminBroadcastState.waiting_for_confirm)
     data = await state.get_data()
 
+    preview_kb = _build_broadcast_button(btn_text, btn_target)
+    try:
+        if data.get("video_note_id"):
+            await bot.send_video_note(
+                chat_id=message.chat.id,
+                video_note=data["video_note_id"],
+                reply_markup=preview_kb,
+            )
+        elif data.get("video_id"):
+            await bot.send_video(
+                chat_id=message.chat.id,
+                video=data["video_id"],
+                caption=data.get("text", ""),
+                reply_markup=preview_kb,
+                parse_mode="HTML",
+            )
+        elif data.get("photo_id"):
+            await bot.send_photo(
+                chat_id=message.chat.id,
+                photo=data["photo_id"],
+                caption=data.get("text", ""),
+                reply_markup=preview_kb,
+                parse_mode="HTML",
+            )
+        else:
+            await bot.send_message(
+                chat_id=message.chat.id,
+                text=data.get("text", "") or "<i>(пустой текст)</i>",
+                reply_markup=preview_kb,
+                parse_mode="HTML",
+            )
+    except Exception as exc:
+        logger.warning("Ошибка предпросмотра рассылки: %s", exc)
+
     await message.answer(
-        f"✅ <b>Предпросмотр готов!</b>\n"
+        f"👀 <b>Выше — предпросмотр вашего сообщения!</b>\n"
         f"• Сегмент: <b>{data['segment']}</b>\n"
         f"• Кнопка: <b>{btn_text or 'нет'}</b>\n\n"
         f"Запустить рассылку в фоновом режиме (20 сообщ./сек)?",
@@ -645,8 +961,10 @@ async def _run_broadcast_task(
     segment: str,
     text: str,
     photo_id: str | None,
+    video_id: str | None,
+    video_note_id: str | None,
     btn_text: str | None,
-    btn_url: str | None,
+    btn_target: str | None,
 ) -> None:
     now = utcnow()
     async with async_session_factory() as session:
@@ -675,17 +993,27 @@ async def _run_broadcast_task(
         res = await session.execute(stmt)
         tg_ids = list(res.scalars().all())
 
-    kb: InlineKeyboardMarkup | None = None
-    if btn_text and btn_url:
-        kb = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text=btn_text, url=btn_url)]]
-        )
+    kb = _build_broadcast_button(btn_text, btn_target)
 
     sent = 0
     failed = 0
     for tg_id in tg_ids:
         try:
-            if photo_id:
+            if video_note_id:
+                await bot.send_video_note(
+                    chat_id=tg_id,
+                    video_note=video_note_id,
+                    reply_markup=kb,
+                )
+            elif video_id:
+                await bot.send_video(
+                    chat_id=tg_id,
+                    video=video_id,
+                    caption=text,
+                    reply_markup=kb,
+                    parse_mode="HTML",
+                )
+            elif photo_id:
                 await bot.send_photo(
                     chat_id=tg_id,
                     photo=photo_id,
@@ -705,7 +1033,6 @@ async def _run_broadcast_task(
         except Exception as exc:
             logger.debug("Ошибка рассылки пользователю %s: %s", tg_id, exc)
             failed += 1
-        # Rate-limit: 20 сообщений в секунду (0.05s)
         await asyncio.sleep(0.05)
 
     try:
@@ -741,14 +1068,16 @@ async def cb_admin_bc_run(
             segment=data.get("segment", "all"),
             text=data.get("text", ""),
             photo_id=data.get("photo_id"),
+            video_id=data.get("video_id"),
+            video_note_id=data.get("video_note_id"),
             btn_text=data.get("btn_text"),
-            btn_url=data.get("btn_url"),
+            btn_target=data.get("btn_target"),
         )
     )
     if callback.message:
         await callback.message.edit_text(
             "🚀 <b>Рассылка запущена в фоновом режиме!</b>\n"
-            "По завершении вы получите отчёт.",
+            "По завершении вы получите подробный отчёт.",
             reply_markup=admin_home_kb(),
             parse_mode="HTML",
         )

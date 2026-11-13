@@ -26,11 +26,15 @@ class Settings(BaseSettings):
     ADMIN_IDS: List[int] = Field(default_factory=list)
     ADMIN_CHAT_ID: int | None = Field(default=None)
 
-    # --- Channel Subscription for Trial ---
+    # --- Trial (1 RUB / 10 Stars), Devices & Limits ---
     REQUIRED_CHANNEL_ID: int | str | None = Field(default=None)
     REQUIRED_CHANNEL_URL: str = Field(default="https://t.me/ghostvpn_news")
     TRIAL_DAYS: int = Field(default=3)
+    TRIAL_PRICE_RUB: float = Field(default=1.0)
+    TRIAL_PRICE_STARS: int = Field(default=10)
     DEFAULT_LIMIT_IP: int = Field(default=3)
+    MAX_LIMIT_IP: int = Field(default=10)
+    EXTRA_DEVICE_PRICE_MONTH_RUB: float = Field(default=69.0)
     KEY_RESET_COOLDOWN_HOURS: int = Field(default=24)
 
     # --- Database (Neon / Supabase PostgreSQL) ---
@@ -45,20 +49,29 @@ class Settings(BaseSettings):
     XUI_PASSWORD: str = Field(default="admin")
     XUI_INBOUND_ID: int = Field(default=1)
     XUI_SUB_BASE_URL: str = Field(default="https://127.0.0.1:2096/sub")
-    XUI_VERIFY_SSL: bool = Field(default=True)
+    XUI_VERIFY_SSL: bool = Field(default=False)
     XUI_SERVER_NAME: str = Field(default="🇳🇱 Нидерланды (VLESS Reality)")
+    XUI_SNI_DOMAINS: str = Field(default="dl.google.com,ya.ru,vk.com")
 
     # --- Payments & Referral ---
     REFERRAL_PERCENT: int = Field(default=15)
     STARS_RUB_RATE: float = Field(default=1.8)  # 1 Star ~= 1.8 RUB
+    USDT_RUB_RATE: float = Field(default=95.0)
 
     CRYPTOBOT_API_TOKEN: str = Field(default="")
     CRYPTOBOT_API_URL: str = Field(default="https://pay.crypt.bot/api")
     CRYPTOBOT_FIAT_CURRENCY: str = Field(default="RUB")
 
+    # --- Platega / P2P RUB Gateway (СБП и карты РФ без ИП) ---
+    PLATEGA_MERCHANT_ID: str = Field(default="")
+    PLATEGA_API_KEY: str = Field(default="")
+    PLATEGA_API_URL: str = Field(default="https://app.platega.io/api/v1")
     RUB_GATEWAY_SHOP_ID: str = Field(default="")
     RUB_GATEWAY_SECRET_KEY: str = Field(default="")
     RUB_GATEWAY_WEBHOOK_SECRET: str = Field(default="rub_webhook_secret_key")
+
+    # --- Anti-Fraud Rate Limit ---
+    RATE_LIMIT_MIN_INTERVAL_SEC: float = Field(default=0.35)
 
     # --- Server Runtime ---
     PORT: int = Field(default=8000)

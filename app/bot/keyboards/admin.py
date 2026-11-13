@@ -11,14 +11,27 @@ from app.db.models import Plan, PromoCode, User
 def admin_home_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.row(
-        InlineKeyboardButton(text="🔄 Обновить дашборд", callback_data="admin:home"),
-        InlineKeyboardButton(text="🔍 Поиск пользователя", callback_data="admin:user_search"),
+        InlineKeyboardButton(text="🔄 Обновить аналитику", callback_data="admin:home"),
+        InlineKeyboardButton(text="🔍 CRM Поиск клиента", callback_data="admin:user_search"),
     )
     b.row(
         InlineKeyboardButton(text="📦 Тарифы", callback_data="admin:plans"),
         InlineKeyboardButton(text="🎟 Промокоды", callback_data="admin:promos"),
     )
-    b.row(InlineKeyboardButton(text="📢 Рассылка (Broadcast)", callback_data="admin:broadcast"))
+    b.row(
+        InlineKeyboardButton(
+            text="🎁 Начислить дни всем активным", callback_data="admin:mass_compensate"
+        )
+    )
+    b.row(
+        InlineKeyboardButton(text="📢 Конструктор рассылок", callback_data="admin:broadcast"),
+        InlineKeyboardButton(text="💾 Бэкап БД сейчас", callback_data="admin:backup_now"),
+    )
+    b.row(
+        InlineKeyboardButton(
+            text="👻 Синхронизировать профиль бота", callback_data="admin:sync_bot_profile"
+        )
+    )
     b.row(InlineKeyboardButton(text="⬅️ В пользовательское меню", callback_data="menu:home"))
     return b.as_markup()
 
@@ -35,8 +48,13 @@ def admin_user_manage_kb(target_user: User) -> InlineKeyboardMarkup:
     )
     b.row(
         InlineKeyboardButton(
-            text="🔄 Сбросить ключ (3X-UI)", callback_data=f"admin:u_reissue:{target_user.id}"
+            text="📱 Лимит устройств", callback_data=f"admin:u_limit:{target_user.id}"
         ),
+        InlineKeyboardButton(
+            text="🔄 Перевыпустить UUID", callback_data=f"admin:u_reissue:{target_user.id}"
+        ),
+    )
+    b.row(
         InlineKeyboardButton(
             text="✅ Разбанить" if target_user.is_banned else "⛔ Забанить",
             callback_data=f"admin:u_ban:{target_user.id}",

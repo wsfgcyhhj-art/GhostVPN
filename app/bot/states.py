@@ -11,6 +11,11 @@ class AdminSearchState(StatesGroup):
     waiting_for_query = State()
     waiting_for_days_delta = State()
     waiting_for_balance_delta = State()
+    waiting_for_limit_ip = State()
+
+
+class AdminMassCompensateState(StatesGroup):
+    waiting_for_days = State()
 
 
 class AdminPlanState(StatesGroup):

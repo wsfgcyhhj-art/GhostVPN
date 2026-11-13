@@ -1,15 +1,31 @@
 from __future__ import annotations
 
+from decimal import Decimal
+
 from aiogram import Bot, F, Router
 from aiogram.enums import ChatMemberStatus
-from aiogram.types import CallbackQuery
+from aiogram.types import CallbackQuery, LabeledPrice
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.handlers.profile import format_subscription_card
-from app.bot.keyboards.user import channel_check_kb, subscription_card_kb
+from app.bot.keyboards.user import (
+    channel_check_kb,
+    invoice_check_kb,
+    subscription_card_kb,
+    trial_payment_kb,
+)
+from app.bot.utils import send_or_edit_banner
 from app.core.config import settings
-from app.core.logging import logger, send_admin_alert
-from app.db.models import User
+from app.core.logging import logger
+from app.db.models import (
+    PaymentProviderType,
+    Transaction,
+    TransactionStatus,
+    TransactionType,
+    User,
+)
+from app.db.repositories import Repository
+from app.services.payments.rub_gateway import PlategaProvider
 from app.services.vpn import VPNService
 
 router = Router(name="trial")
@@ -38,77 +54,191 @@ async def is_user_subscribed(bot: Bot, user_id: int) -> bool:
 
 
 @router.callback_query(F.data.in_({"trial:start", "trial:verify"}))
-async def cb_trial_activate(
+async def cb_trial_start(
     callback: CallbackQuery,
     bot: Bot,
-    session: AsyncSession,
+    repo: Repository,
     db_user: User,
 ) -> None:
     if db_user.has_used_trial:
-        await callback.answer("Вы уже использовали пробный период ранее.", show_alert=True)
+        await callback.answer("Ты уже использовал пробный период ранее :)", show_alert=True)
         return
 
     subscribed = await is_user_subscribed(bot, db_user.telegram_id)
     if not subscribed:
         if callback.data == "trial:verify":
             await callback.answer(
-                "❌ Подписка не обнаружена! Подпишитесь на канал и нажмите кнопку ещё раз.",
+                "❌ Подписка на канал пока не найдена. Подпишись и нажми кнопку ещё раз!",
                 show_alert=True,
             )
             return
 
         text = (
-            f"🎁 <b>Бесплатный тест на {settings.TRIAL_DAYS} дня</b>\n\n"
-            f"Для защиты от ботов и получения новостей о работе серверов "
-            f"подпишитесь на наш официальный Telegram-канал, а затем нажмите "
-            f"<b>«✅ Я подписался (Проверить)»</b>."
+            f"🔥 <b>Тест-драйв GhostVPN на {settings.TRIAL_DAYS} дня</b>\n\n"
+            f"Сначала подпишись на наш новостной канал (там мы публикуем важные обновления и бонусные промокоды), "
+            f"а затем нажми <b>«✅ Я подписался (Проверить)»</b>."
         )
-        if callback.message:
-            await callback.message.edit_text(
-                text, reply_markup=channel_check_kb(), parse_mode="HTML"
-            )
+        await send_or_edit_banner(
+            callback,
+            banner_key="trial",
+            caption=text,
+            reply_markup=channel_check_kb(db_user.language),
+            lang=db_user.language,
+            repo=repo,
+        )
         await callback.answer()
         return
 
-    vpn_service = VPNService(session)
-    try:
-        sub = await vpn_service.grant_or_extend_subscription(
-            user=db_user,
-            days=settings.TRIAL_DAYS,
-            limit_ip=settings.DEFAULT_LIMIT_IP,
-            is_trial=True,
-        )
-    except Exception as exc:
-        logger.error("Ошибка выдачи триала для %s: %s", db_user.telegram_id, exc)
-        await send_admin_alert(
-            bot,
-            f"Сбой выдачи триала для <code>{db_user.telegram_id}</code>:\n<code>{exc}</code>",
-            critical=True,
-        )
+    trial_rub = Decimal(str(settings.TRIAL_PRICE_RUB)).quantize(Decimal("0.01"))
+    text = (
+        f"🔥 <b>Полный доступ на {settings.TRIAL_DAYS} дня всего за {trial_rub} ₽!</b>\n\n"
+        f"Чтобы защитить сервер от автоматических ботов и сохранить для тебя максимальную скорость 500 Мбит/с, "
+        f"активация пробного периода стоит символический <b>{trial_rub} ₽</b> (или <b>{settings.TRIAL_PRICE_STARS} ⭐️ Telegram Stars</b>).\n\n"
+        f"✨ <b>Что ты получишь мгновенно:</b>\n"
+        f"• 🇳🇱 3 дня безлимитного трафика и максимальной скорости\n"
+        f"• 📱 Подключение до <b>{settings.DEFAULT_LIMIT_IP} устройств</b> сразу\n"
+        f"• 🛡 Работающий YouTube 4K, Instagram и звонки на любом интернете\n\n"
+        f"Выбери удобный способ активации:"
+    )
+    await send_or_edit_banner(
+        callback,
+        banner_key="trial",
+        caption=text,
+        reply_markup=trial_payment_kb(db_user.balance_rub, db_user.language),
+        lang=db_user.language,
+        repo=repo,
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("trial:pay:"))
+async def cb_trial_pay(
+    callback: CallbackQuery,
+    bot: Bot,
+    session: AsyncSession,
+    repo: Repository,
+    db_user: User,
+) -> None:
+    if db_user.has_used_trial:
+        await callback.answer("Пробный период доступен только 1 раз.", show_alert=True)
+        return
+
+    recent_pending = await repo.count_recent_pending_transactions(db_user.id, minutes=10)
+    if recent_pending >= 5:
         await callback.answer(
-            "⚠️ Сервер временно перегружен, попробуйте через минуту.",
+            "⏳ У тебя уже создано несколько активных счетов. Пожалуйста, оплати один из них или подожди пару минут.",
             show_alert=True,
         )
         return
 
-    await send_admin_alert(
-        bot,
-        (
-            f"🎁 <b>Активирован пробный период ({settings.TRIAL_DAYS} дн.)</b>\n"
-            f"👤 Пользователь: <code>{db_user.telegram_id}</code> (@{db_user.username or 'нет'})\n"
-            f"🔑 Sub ID: <code>{sub.sub_id}</code>"
-        ),
-    )
+    method_str = (callback.data or "").split(":")[2]
+    trial_rub = Decimal(str(settings.TRIAL_PRICE_RUB)).quantize(Decimal("0.01"))
 
-    card_text = (
-        f"🎉 <b>Пробный доступ на {settings.TRIAL_DAYS} дня успешно активирован!</b>\n\n"
-        + format_subscription_card(sub)
-    )
-    if callback.message:
-        await callback.message.edit_text(
-            card_text,
-            reply_markup=subscription_card_kb(sub),
-            parse_mode="HTML",
-            disable_web_page_preview=True,
+    if method_str == "BALANCE":
+        if db_user.balance_rub < trial_rub:
+            await callback.answer("Недостаточно средств на балансе.", show_alert=True)
+            return
+
+        tx = Transaction(
+            user_id=db_user.id,
+            plan_id=None,
+            tx_type=TransactionType.TRIAL,
+            provider=PaymentProviderType.BALANCE,
+            currency="RUB",
+            amount_currency=trial_rub,
+            amount_rub=Decimal("0.00"),
+            balance_used_rub=trial_rub,
+            status=TransactionStatus.PENDING,
         )
-    await callback.answer("Пробный период активирован!")
+        session.add(tx)
+        await session.commit()
+        await session.refresh(tx)
+
+        vpn_service = VPNService(session)
+        ok, sub = await vpn_service.process_successful_payment(tx, bot=bot)
+        if ok and sub:
+            await send_or_edit_banner(
+                callback,
+                banner_key="profile",
+                caption=(
+                    f"🎉 <b>Ура! Пробный период на {settings.TRIAL_DAYS} дня активирован!</b>\n\n"
+                    + await format_subscription_card(sub, user=db_user)
+                ),
+                reply_markup=subscription_card_kb(db_user, sub),
+                lang=db_user.language,
+                repo=repo,
+            )
+        await callback.answer("Пробный период активирован!")
+        return
+
+    if method_str == "STARS":
+        tx = Transaction(
+            user_id=db_user.id,
+            plan_id=None,
+            tx_type=TransactionType.TRIAL,
+            provider=PaymentProviderType.STARS,
+            currency="XTR",
+            amount_currency=Decimal(str(settings.TRIAL_PRICE_STARS)),
+            amount_rub=trial_rub,
+            balance_used_rub=Decimal("0.00"),
+            status=TransactionStatus.PENDING,
+        )
+        session.add(tx)
+        await session.commit()
+        await session.refresh(tx)
+        tx.external_id = f"stars_trial_{tx.id}"
+        await session.commit()
+
+        await bot.send_invoice(
+            chat_id=db_user.telegram_id,
+            title=f"GhostVPN — Тест на {settings.TRIAL_DAYS} дня",
+            description=f"Активация полного пробного доступа GhostVPN на {settings.TRIAL_DAYS} дня (до 3 устройств)",
+            payload=f"tx:{tx.id}",
+            provider_token="",
+            currency="XTR",
+            prices=[LabeledPrice(label="Пробный период 3 дня", amount=settings.TRIAL_PRICE_STARS)],
+        )
+        await callback.answer("Счёт в Telegram Stars отправлен!")
+        return
+
+    if method_str == "RUB_GATEWAY":
+        tx = Transaction(
+            user_id=db_user.id,
+            plan_id=None,
+            tx_type=TransactionType.TRIAL,
+            provider=PaymentProviderType.RUB_GATEWAY,
+            currency="RUB",
+            amount_currency=trial_rub,
+            amount_rub=trial_rub,
+            balance_used_rub=Decimal("0.00"),
+            status=TransactionStatus.PENDING,
+        )
+        session.add(tx)
+        await session.commit()
+        await session.refresh(tx)
+
+        platega = PlategaProvider()
+        inv = await platega.create_invoice(
+            transaction_id=tx.id,
+            amount_rub=trial_rub,
+            description=f"GhostVPN: Пробный доступ на {settings.TRIAL_DAYS} дня",
+            user_telegram_id=db_user.telegram_id,
+        )
+        tx.external_id = inv.external_id
+        tx.payment_url = inv.payment_url
+        await session.commit()
+
+        if inv.payment_url:
+            await send_or_edit_banner(
+                callback,
+                banner_key="trial",
+                caption=(
+                    f"💳 <b>Активация триала за {trial_rub} ₽ (Заказ #{tx.id})</b>\n\n"
+                    f"Нажми кнопку <b>«🔗 Перейти к оплате»</b> (СБП или любая карта РФ).\n"
+                    f"Сразу после оплаты бот мгновенно выдаст твой ключ доступа!"
+                ),
+                reply_markup=invoice_check_kb(tx.id, inv.payment_url),
+                lang=db_user.language,
+                repo=repo,
+            )
+        await callback.answer()

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
+from typing import Any
+from urllib.parse import parse_qsl
 
 
 def verify_telegram_secret(header_secret: str | None, expected_secret: str) -> bool:
@@ -24,8 +27,42 @@ def verify_cryptobot_signature(raw_body: bytes, signature: str | None, api_token
 
 
 def verify_rub_gateway_signature(raw_body: bytes, signature: str | None, secret: str) -> bool:
-    """Проверяет HMAC-SHA256 подпись вебхука рублёвого шлюза."""
+    """Проверяет HMAC-SHA256 подпись вебхука рублёвого шлюза (Platega / CrystalPay)."""
     if not signature or not secret:
         return False
     calculated = hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(calculated, signature)
+    return hmac.compare_digest(calculated, signature.strip().lower())
+
+
+def verify_telegram_webapp_init_data(init_data: str, bot_token: str) -> dict[str, Any] | None:
+    """
+    Криптографическая проверка подлинности `Telegram.WebApp.initData` (HMAC-SHA256).
+    Возвращает словарь распарсенных данных (включая `user`), либо None при подделке.
+    """
+    if not init_data or not bot_token:
+        return None
+    try:
+        parsed = dict(parse_qsl(init_data, keep_blank_values=True))
+    except Exception:
+        return None
+
+    received_hash = parsed.pop("hash", None)
+    if not received_hash:
+        return None
+
+    data_check_string = "\n".join(f"{k}={v}" for k, v in sorted(parsed.items()))
+    secret_key = hmac.new(b"WebAppData", bot_token.encode("utf-8"), hashlib.sha256).digest()
+    calculated_hash = hmac.new(
+        secret_key, data_check_string.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+
+    if not hmac.compare_digest(calculated_hash, received_hash):
+        return None
+
+    result: dict[str, Any] = dict(parsed)
+    if "user" in result and isinstance(result["user"], str):
+        try:
+            result["user"] = json.loads(result["user"])
+        except Exception:
+            return None
+    return result
