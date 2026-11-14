@@ -604,13 +604,86 @@ class VPNService:
                     exc,
                 )
 
+    @staticmethod
+    async def _ensure_client_in_inbound(
+        client: XUIClient,
+        *,
+        inbound_id: int,
+        client_uuid: str,
+        email: str,
+        sub_id: str,
+        expiry_time_ms: int,
+        limit_ip: int,
+        enable: bool,
+        tg_id: str,
+    ) -> None:
+        """
+        Гарантирует наличие клиента в целевом инбаунде 3X-UI (автоматически добавляет,
+        если инбаунд был создан позже, обрабатывая возможную коллизию email между инбаундами).
+        """
+        try:
+            await client.add_client(
+                inbound_id=inbound_id,
+                client_uuid=client_uuid,
+                email=email,
+                sub_id=sub_id,
+                expiry_time_ms=expiry_time_ms,
+                limit_ip=limit_ip,
+                total_gb=0,
+                enable=enable,
+                tg_id=tg_id,
+            )
+        except XUIError as exc:
+            err_lower = str(exc).lower()
+            if "duplicate email" in err_lower:
+                try:
+                    await client.add_client(
+                        inbound_id=inbound_id,
+                        client_uuid=client_uuid,
+                        email=f"{email}_inb{inbound_id}",
+                        sub_id=sub_id,
+                        expiry_time_ms=expiry_time_ms,
+                        limit_ip=limit_ip,
+                        total_gb=0,
+                        enable=enable,
+                        tg_id=tg_id,
+                    )
+                except Exception as retry_exc:
+                    logger.debug(
+                        "Повторное добавление клиента %s в inbound #%s: %s",
+                        email,
+                        inbound_id,
+                        retry_exc,
+                    )
+            elif "duplicate" not in err_lower:
+                logger.warning(
+                    "Не удалось автоматически добавить клиента %s в новый inbound #%s: %s",
+                    email,
+                    inbound_id,
+                    exc,
+                )
+        except Exception as exc:
+            logger.warning(
+                "Ошибка авто-синхронизации клиента %s в inbound #%s: %s",
+                email,
+                inbound_id,
+                exc,
+            )
+
     async def fetch_live_mobile_profile(self, sub: Subscription) -> dict[str, Any]:
         """
         Запрашивает реальные настройки `serverNames` (SNI), `publicKey`, `shortId`, `port`
-        напрямую из всех целевых подключений (`get_target_inbound_ids(server)`) в панели 3X-UI
-        и возвращает готовый мульти-профиль с европейскими узлами «🇪🇺 Европа • Узел 1..N».
+        напрямую из всех целевых подключений (`get_target_inbound_ids(server)`) в панели 3X-UI.
+        Если в новых подключениях активный и не заблокированный клиент ещё отсутствует —
+        автоматически добавляет его туда с текущими `uuid`, `subId`, `email`, `limitIp` и `expiryTime`,
+        после чего возвращает мульти-профиль с европейскими узлами «🇪🇺 Европа • Узел 1..N».
         """
         server = sub.server or await self._get_server()
+        user = sub.user or await self.session.get(User, sub.user_id)
+        should_sync_missing = bool(sub.is_currently_valid and not (user and user.is_banned))
+        tg_id_str = str(user.telegram_id) if user else ""
+        expiry_ms = datetime_to_ms(sub.expires_at)
+
         target_inbounds = get_target_inbound_ids(server)
         inbound_infos: list[XUIInboundRealityInfo | None] = []
 
@@ -626,6 +699,25 @@ class VPNService:
                         exc,
                     )
                     info = None
+
+                if (
+                    should_sync_missing
+                    and info is not None
+                    and sub.xui_client_uuid not in info.client_uuids
+                ):
+                    await self._ensure_client_in_inbound(
+                        client,
+                        inbound_id=inbound_id,
+                        client_uuid=sub.xui_client_uuid,
+                        email=sub.xui_email,
+                        sub_id=sub.sub_id,
+                        expiry_time_ms=expiry_ms,
+                        limit_ip=sub.limit_ip,
+                        enable=True,
+                        tg_id=tg_id_str,
+                    )
+                    info.client_uuids.add(sub.xui_client_uuid)
+
                 inbound_infos.append(info)
         finally:
             if self._xui_override is None:

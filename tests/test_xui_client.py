@@ -158,6 +158,13 @@ async def test_xui_client_get_inbound_reality_info_parses_stream_settings() -> N
                     "obj": {
                         "id": 2,
                         "port": 8443,
+                        "settings": json.dumps(
+                            {
+                                "clients": [
+                                    {"id": "uuid-existing-1", "email": "tg_1", "subId": "sub1"}
+                                ]
+                            }
+                        ),
                         "streamSettings": json.dumps(stream_settings),
                     },
                 },
@@ -183,4 +190,5 @@ async def test_xui_client_get_inbound_reality_info_parses_stream_settings() -> N
     assert info.public_key == "VK_REALITY_PBK_456"
     assert info.short_id == "a1b2c3d4"
     assert info.fingerprint == "chrome"
+    assert info.client_uuids == {"uuid-existing-1"}
 

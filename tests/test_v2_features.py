@@ -392,8 +392,12 @@ async def test_dual_reality_inbounds_sync_and_mobile_multiprofile_formats(
             5: (2087, ["microsoft.com"], "PBK_NODE_5", "ee55", "chrome"),
         }
 
+        sub = None
+
         async def fake_get_inbound_info(inbound_id: int) -> XUIInboundRealityInfo:
             port, snis, pbk, sid, fp = inbound_specs[inbound_id]
+            # Имитируем ситуацию: в инбаунде #1 клиент уже есть, а инбаунды #2..5 созданы позже и ещё пустые
+            existing_uuids = {sub.xui_client_uuid} if (inbound_id == 1 and sub is not None) else set()
             return XUIInboundRealityInfo(
                 inbound_id=inbound_id,
                 port=port,
@@ -401,6 +405,7 @@ async def test_dual_reality_inbounds_sync_and_mobile_multiprofile_formats(
                 public_key=pbk,
                 short_id=sid,
                 fingerprint=fp,
+                client_uuids=existing_uuids,
             )
 
         mock_xui.get_inbound_reality_info.side_effect = fake_get_inbound_info
@@ -437,6 +442,8 @@ async def test_dual_reality_inbounds_sync_and_mobile_multiprofile_formats(
         assert mock_xui.add_client.await_count == 5
 
         # 4. Проверка смарт-эндпоинта GET /sub/mobile/{sub_id} (5 узлов «🇪🇺 Европа • Узел 1..5» в JSON, YAML, Base64)
+        # и автоматического добавления клиента в новые инбаунды #2..5, где его ещё не было
+        mock_xui.add_client.reset_mock()
         expected_titles = [
             "🇪🇺 Европа • Узел 1",
             "🇪🇺 Европа • Узел 2",
@@ -452,6 +459,15 @@ async def test_dual_reality_inbounds_sync_and_mobile_multiprofile_formats(
                     headers={"User-Agent": "Happ/1.4.0 iOS"},
                 )
                 assert resp_json.status_code == 200
+                # В inbound #1 клиент уже был, а в #2, #3, #4, #5 он автоматически добавлен с текущими параметрами
+                assert mock_xui.add_client.await_count == 4
+                auto_added_inbounds = [c.kwargs["inbound_id"] for c in mock_xui.add_client.await_args_list]
+                assert auto_added_inbounds == [2, 3, 4, 5]
+                for c in mock_xui.add_client.await_args_list:
+                    assert c.kwargs["client_uuid"] == sub.xui_client_uuid
+                    assert c.kwargs["sub_id"] == sub.sub_id
+                    assert c.kwargs["email"] == sub.xui_email
+                    assert c.kwargs["limit_ip"] == sub.limit_ip
                 data = resp_json.json()
                 assert len(data["profiles"]) == 5
                 assert [p["name"] for p in data["profiles"]] == expected_titles

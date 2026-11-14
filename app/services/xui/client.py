@@ -54,6 +54,7 @@ class XUIInboundRealityInfo:
     fingerprint: str = "chrome"
     spider_x: str = "/"
     remark: str = ""
+    client_uuids: set[str] = field(default_factory=set)
 
     @property
     def primary_sni(self) -> str:
@@ -402,6 +403,28 @@ class XUIClient:
             or "/"
         ).strip()
 
+        client_uuids: set[str] = set()
+        inbound_settings_raw = obj.get("settings", "{}")
+        if isinstance(inbound_settings_raw, str):
+            try:
+                inbound_settings = (
+                    json.loads(inbound_settings_raw) if inbound_settings_raw.strip() else {}
+                )
+            except Exception:
+                inbound_settings = {}
+        elif isinstance(inbound_settings_raw, dict):
+            inbound_settings = inbound_settings_raw
+        else:
+            inbound_settings = {}
+
+        raw_clients = inbound_settings.get("clients")
+        if isinstance(raw_clients, list):
+            for c in raw_clients:
+                if isinstance(c, dict):
+                    cid = str(c.get("id") or "").strip()
+                    if cid:
+                        client_uuids.add(cid)
+
         return XUIInboundRealityInfo(
             inbound_id=inbound_id,
             port=port,
@@ -411,6 +434,7 @@ class XUIClient:
             fingerprint=fingerprint,
             spider_x=spider_x,
             remark=remark,
+            client_uuids=client_uuids,
         )
 
     async def get_inbound_reality_info(self, inbound_id: int) -> XUIInboundRealityInfo | None:
