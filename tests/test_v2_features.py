@@ -441,15 +441,15 @@ async def test_dual_reality_inbounds_sync_and_mobile_multiprofile_formats(
         assert mock_xui.delete_client_by_uuid.await_count == 5
         assert mock_xui.add_client.await_count == 5
 
-        # 4. Проверка смарт-эндпоинта GET /sub/mobile/{sub_id} (5 узлов «🇪🇺 Европа • Узел 1..5» в JSON, YAML, Base64)
+        # 4. Проверка смарт-эндпоинта GET /sub/mobile/{sub_id} (5 узлов «⚡️ Узел 1..5» в JSON, YAML, Base64)
         # и автоматического добавления клиента в новые инбаунды #2..5, где его ещё не было
         mock_xui.add_client.reset_mock()
         expected_titles = [
-            "🇪🇺 Европа • Узел 1",
-            "🇪🇺 Европа • Узел 2",
-            "🇪🇺 Европа • Узел 3",
-            "🇪🇺 Европа • Узел 4",
-            "🇪🇺 Европа • Узел 5",
+            "⚡️ Узел 1",
+            "⚡️ Узел 2",
+            "⚡️ Узел 3",
+            "⚡️ Узел 4",
+            "⚡️ Узел 5",
         ]
         with patch("app.services.vpn.XUIClient.from_server", return_value=mock_xui):
             async with AsyncClient(transport=transport, base_url="http://testserver") as client:

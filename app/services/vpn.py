@@ -33,18 +33,18 @@ if TYPE_CHECKING:
 ALPHABET = string.ascii_lowercase + string.digits
 
 EU_NODE_TITLES: list[str] = [
-    "🇪🇺 Европа • Узел 1",
-    "🇪🇺 Европа • Узел 2",
-    "🇪🇺 Европа • Узел 3",
-    "🇪🇺 Европа • Узел 4",
-    "🇪🇺 Европа • Узел 5",
+    "⚡️ Узел 1",
+    "⚡️ Узел 2",
+    "⚡️ Узел 3",
+    "⚡️ Узел 4",
+    "⚡️ Узел 5",
 ]
 NODE_TITLE_PRIMARY = EU_NODE_TITLES[0]
 NODE_TITLE_RESERVE = EU_NODE_TITLES[1]
 
 
 def format_eu_node_title(index_1_based: int) -> str:
-    return f"🇪🇺 Европа • Узел {index_1_based}"
+    return f"⚡️ Узел {index_1_based}"
 
 
 FRAGMENT_SPEC: dict[str, Any] = {
