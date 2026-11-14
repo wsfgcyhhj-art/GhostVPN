@@ -32,8 +32,20 @@ if TYPE_CHECKING:
 
 ALPHABET = string.ascii_lowercase + string.digits
 
-NODE_TITLE_PRIMARY = "🇳🇱 GhostVPN • LTE Основной (Yandex SNI + Fragment)"
-NODE_TITLE_RESERVE = "🇳🇱 GhostVPN • LTE Резерв (VK SNI + Fragment)"
+EU_NODE_TITLES: list[str] = [
+    "🇪🇺 Европа • Узел 1",
+    "🇪🇺 Европа • Узел 2",
+    "🇪🇺 Европа • Узел 3",
+    "🇪🇺 Европа • Узел 4",
+    "🇪🇺 Европа • Узел 5",
+]
+NODE_TITLE_PRIMARY = EU_NODE_TITLES[0]
+NODE_TITLE_RESERVE = EU_NODE_TITLES[1]
+
+
+def format_eu_node_title(index_1_based: int) -> str:
+    return f"🇪🇺 Европа • Узел {index_1_based}"
+
 
 FRAGMENT_SPEC: dict[str, Any] = {
     "enabled": True,
@@ -64,15 +76,31 @@ def build_subscription_url(sub_id: str, server: Server | None = None) -> str:
     return f"{sub_base}/{sub_id}"
 
 
-def get_target_inbound_ids(server: Server) -> list[int]:
+def get_target_inbound_ids(server: Server | None = None) -> list[int]:
     """
-    Возвращает список ID инбаундов 3X-UI для синхронизации клиента:
-    основной `server.inbound_id` и (если задан в `.env`) резервный `XUI_MOBILE_INBOUND_ID`.
+    Возвращает общий список ID подключений (инбаундов) 3X-UI без дублей:
+    основной `XUI_INBOUND_ID` (`server.inbound_id`), резервный `XUI_MOBILE_INBOUND_ID` (если задан)
+    и все ID из `XUI_EXTRA_INBOUND_IDS` (список через запятую, например "2,3,4,5").
     """
-    ids = [server.inbound_id]
+    primary_id = (
+        server.inbound_id
+        if (server is not None and server.inbound_id)
+        else settings.XUI_INBOUND_ID
+    )
+    ids: list[int] = [primary_id]
+
     mob_id = settings.XUI_MOBILE_INBOUND_ID
     if mob_id is not None and mob_id > 0 and mob_id not in ids:
         ids.append(mob_id)
+
+    raw_extra = (getattr(settings, "XUI_EXTRA_INBOUND_IDS", "") or "").strip()
+    if raw_extra:
+        for part in raw_extra.split(","):
+            cleaned = part.strip()
+            if cleaned.isdigit():
+                extra_id = int(cleaned)
+                if extra_id > 0 and extra_id not in ids:
+                    ids.append(extra_id)
     return ids
 
 
@@ -174,113 +202,136 @@ def build_tls_fragment_profile(
     sub: Subscription,
     primary_info: XUIInboundRealityInfo | None = None,
     reserve_info: XUIInboundRealityInfo | None = None,
+    inbound_infos: list[XUIInboundRealityInfo | None] | None = None,
 ) -> dict[str, Any]:
     """
-    Генерирует мульти-профиль с двумя Reality-подключениями на одном VPS:
-      1) «🇳🇱 GhostVPN • LTE Основной (Yandex SNI + Fragment)»
-      2) «🇳🇱 GhostVPN • LTE Резерв (VK SNI + Fragment)»
-    Использует реальные serverNames (SNI), publicKey, shortId и port из настроек inbound в 3X-UI,
-    вшивая TLS Fragment (packets: "tlshello", length: "10-20", interval: "10-15"),
-    принудительный IPv4 (UseIPv4 / prefer_ipv4) и uTLS fingerprint ("chrome" / "ios").
+    Генерирует мульти-профиль с европейскими узлами («🇪🇺 Европа • Узел 1..5») на одном VPS.
+    Для каждого подключения считывает реальные serverNames (SNI), publicKey, shortId и port
+    напрямую из настроек соответствующего inbound в 3X-UI, вшивая TLS Fragment
+    (packets: "tlshello", length: "10-20", interval: "10-15"), принудительный IPv4 и uTLS fingerprint.
     """
     server = sub.server
     host = _extract_server_hostname(server)
+    target_inbounds = get_target_inbound_ids(server)
 
     env_snis = [
         d.strip() for d in settings.XUI_SNI_DOMAINS.split(",") if d.strip()
     ] or ["ya.ru", "vk.com", "dl.google.com"]
 
-    # 1. Основной LTE-профиль (Yandex SNI + uTLS chrome + TLS Fragment)
-    p_names = primary_info.server_names if (primary_info and primary_info.server_names) else env_snis
-    p_sni = _select_preferred_sni(p_names, "ya", "ya.ru")
-    p_port = primary_info.port if primary_info else 443
-    p_pbk = primary_info.public_key if primary_info else ""
-    p_sid = primary_info.short_id if primary_info else ""
-    p_spx = primary_info.spider_x if primary_info else "/"
-    p_fp = "chrome"
+    resolved_infos: list[XUIInboundRealityInfo | None]
+    if inbound_infos is not None and len(inbound_infos) > 0:
+        resolved_infos = list(inbound_infos)
+    elif primary_info is not None or reserve_info is not None:
+        resolved_infos = [primary_info, reserve_info or primary_info]
+    else:
+        resolved_infos = [None for _ in target_inbounds]
 
-    # 2. Резервный LTE-профиль (VK SNI + uTLS ios + TLS Fragment)
-    eff_reserve = reserve_info or primary_info
-    r_names = eff_reserve.server_names if (eff_reserve and eff_reserve.server_names) else env_snis
-    r_sni = _select_preferred_sni(r_names, "vk", "vk.com")
-    r_port = eff_reserve.port if eff_reserve else 8443
-    r_pbk = eff_reserve.public_key if eff_reserve else p_pbk
-    r_sid = eff_reserve.short_id if eff_reserve else p_sid
-    r_spx = eff_reserve.spider_x if eff_reserve else "/"
-    r_fp = "ios"
+    # Если сконфигурирован только 1 инбаунд без доп. списка, формируем минимум 2 узла (Узел 1 и Узел 2)
+    if len(resolved_infos) == 1:
+        resolved_infos.append(resolved_infos[0])
 
-    uri_primary = _build_vless_reality_uri(
-        client_uuid=sub.xui_client_uuid,
-        host=host,
-        port=p_port,
-        sni=p_sni,
-        public_key=p_pbk,
-        short_id=p_sid,
-        fingerprint=p_fp,
-        spider_x=p_spx,
-        title=NODE_TITLE_PRIMARY,
-    )
-    uri_reserve = _build_vless_reality_uri(
-        client_uuid=sub.xui_client_uuid,
-        host=host,
-        port=r_port,
-        sni=r_sni,
-        public_key=r_pbk,
-        short_id=r_sid,
-        fingerprint=r_fp,
-        spider_x=r_spx,
-        title=NODE_TITLE_RESERVE,
-    )
+    first_valid_info = next((inf for inf in resolved_infos if inf is not None), None)
 
-    node_primary = {
-        "name": NODE_TITLE_PRIMARY,
-        "inbound_id": primary_info.inbound_id if primary_info else (server.inbound_id if server else 1),
-        "protocol": "vless",
-        "address": host,
-        "port": p_port,
-        "uuid": sub.xui_client_uuid,
-        "flow": "xtls-rprx-vision",
-        "sni": p_sni,
-        "serverNames": p_names,
-        "publicKey": p_pbk,
-        "shortId": p_sid,
-        "spiderX": p_spx,
-        "fingerprint": p_fp,
-        "ip_strategy": "UseIPv4",
-        "prefer_ipv4": True,
-        "fragment": dict(FRAGMENT_SPEC),
-        "vless_uri": uri_primary,
-    }
-    node_reserve = {
-        "name": NODE_TITLE_RESERVE,
-        "inbound_id": (
-            reserve_info.inbound_id
-            if reserve_info
-            else (settings.XUI_MOBILE_INBOUND_ID or (server.inbound_id if server else 1))
-        ),
-        "protocol": "vless",
-        "address": host,
-        "port": r_port,
-        "uuid": sub.xui_client_uuid,
-        "flow": "xtls-rprx-vision",
-        "sni": r_sni,
-        "serverNames": r_names,
-        "publicKey": r_pbk,
-        "shortId": r_sid,
-        "spiderX": r_spx,
-        "fingerprint": r_fp,
-        "ip_strategy": "UseIPv4",
-        "prefer_ipv4": True,
-        "fragment": dict(FRAGMENT_SPEC),
-        "vless_uri": uri_reserve,
-    }
+    profiles: list[dict[str, Any]] = []
+    links: list[str] = []
+    collected_snis: list[str] = []
 
-    combined_sni = list(dict.fromkeys([p_sni, r_sni, *env_snis]))
-    raw_links = f"{uri_primary}\n{uri_reserve}"
+    for idx_zero, info in enumerate(resolved_infos):
+        node_num = idx_zero + 1
+        node_title = format_eu_node_title(node_num)
+        eff_info = info or first_valid_info
+
+        inbound_id = (
+            info.inbound_id
+            if info is not None
+            else (
+                target_inbounds[idx_zero]
+                if idx_zero < len(target_inbounds)
+                else (server.inbound_id if server else 1)
+            )
+        )
+
+        names = (
+            eff_info.server_names
+            if (eff_info and eff_info.server_names)
+            else env_snis
+        )
+        if info is not None and info.server_names:
+            # Если у инбаунда собственные serverNames в 3X-UI, берём его реальный SNI
+            if len(info.server_names) == 1:
+                sni = info.server_names[0]
+            elif node_num == 1:
+                sni = _select_preferred_sni(names, "ya", names[0])
+            elif node_num == 2 and info is first_valid_info:
+                sni = _select_preferred_sni(names, "vk", names[0])
+            else:
+                sni = names[0]
+        else:
+            if node_num == 1:
+                sni = _select_preferred_sni(names, "ya", "ya.ru")
+            elif node_num == 2:
+                sni = _select_preferred_sni(names, "vk", "vk.com")
+            else:
+                sni = names[(node_num - 1) % len(names)]
+
+        port = (
+            info.port
+            if info is not None
+            else (
+                eff_info.port
+                if (eff_info is not None and node_num == 1)
+                else (443 if node_num == 1 else 8442 + node_num - 1)
+            )
+        )
+        pbk = eff_info.public_key if eff_info is not None else ""
+        sid = eff_info.short_id if eff_info is not None else ""
+        spx = eff_info.spider_x if eff_info is not None else "/"
+        fp = (
+            info.fingerprint
+            if (info is not None and info.fingerprint and node_num > 2)
+            else ("chrome" if node_num % 2 == 1 else "ios")
+        )
+
+        uri = _build_vless_reality_uri(
+            client_uuid=sub.xui_client_uuid,
+            host=host,
+            port=port,
+            sni=sni,
+            public_key=pbk,
+            short_id=sid,
+            fingerprint=fp,
+            spider_x=spx,
+            title=node_title,
+        )
+        node_dict = {
+            "name": node_title,
+            "inbound_id": inbound_id,
+            "protocol": "vless",
+            "address": host,
+            "port": port,
+            "uuid": sub.xui_client_uuid,
+            "flow": "xtls-rprx-vision",
+            "sni": sni,
+            "serverNames": names,
+            "publicKey": pbk,
+            "shortId": sid,
+            "spiderX": spx,
+            "fingerprint": fp,
+            "ip_strategy": "UseIPv4",
+            "prefer_ipv4": True,
+            "fragment": dict(FRAGMENT_SPEC),
+            "vless_uri": uri,
+        }
+        profiles.append(node_dict)
+        links.append(uri)
+        collected_snis.append(sni)
+
+    combined_sni = list(dict.fromkeys([*collected_snis, *env_snis]))
+    raw_links = "\n".join(links)
     b64_links = base64.b64encode(raw_links.encode("utf-8")).decode("ascii")
 
     return {
-        "remarks": f"GhostVPN 🇳🇱 Dual-LTE Anti-DPI ({sub.sub_id[:6]})",
+        "remarks": f"GhostVPN 🇪🇺 Europe Anti-DPI ({sub.sub_id[:6]})",
         "subscription_url": build_subscription_url(sub.sub_id, server=server),
         "dns": {
             "servers": ["https://1.1.1.1/dns-query", "77.88.8.8"],
@@ -293,8 +344,8 @@ def build_tls_fragment_profile(
         "utls_fingerprints": ["chrome", "ios"],
         "sni_whitelist": combined_sni,
         "ipv6_disabled": True,
-        "profiles": [node_primary, node_reserve],
-        "links": [uri_primary, uri_reserve],
+        "profiles": profiles,
+        "links": links,
         "base64_sub": b64_links,
     }
 
@@ -302,11 +353,11 @@ def build_tls_fragment_profile(
 def render_mobile_yaml_profile(multi_profile: dict[str, Any]) -> str:
     """
     Генерирует YAML мульти-профиль (Clash Meta / Mihomo / Hiddify / Stash)
-    с двумя Reality-подключениями, TLS Fragment, UseIPv4/prefer_ipv4 и uTLS chrome/ios.
+    со всеми европейскими узлами «🇪🇺 Европа • Узел 1..N», TLS Fragment, UseIPv4/prefer_ipv4 и uTLS.
     """
     profiles = multi_profile.get("profiles", [])
     lines = [
-        "# GhostVPN Dual-LTE Anti-DPI Multi-Profile",
+        "# GhostVPN Europe Anti-DPI Multi-Profile",
         "mixed-port: 7890",
         "allow-lan: false",
         "mode: rule",
@@ -357,10 +408,14 @@ def render_mobile_yaml_profile(multi_profile: dict[str, Any]) -> str:
             "    url: http://www.gstatic.com/generate_204",
             "    interval: 120",
             "    proxies:",
-            f'      - "{NODE_TITLE_PRIMARY}"',
-            f'      - "{NODE_TITLE_RESERVE}"',
+        ]
+    )
+    for p in profiles:
+        lines.append(f'      - "{p["name"]}"')
+    lines.extend(
+        [
             "rules:",
-            '  - MATCH,👻 GhostVPN LTE',
+            "  - MATCH,👻 GhostVPN LTE",
         ]
     )
     return "\n".join(lines) + "\n"
@@ -426,10 +481,11 @@ class VPNService:
                 )
             except XUIError as exc:
                 if idx > 0 and "duplicate email" in str(exc).lower():
+                    alt_email = f"{email}_inb{inbound_id}"
                     await client.add_client(
                         inbound_id=inbound_id,
                         client_uuid=client_uuid,
-                        email=f"{email}_lte",
+                        email=alt_email,
                         sub_id=sub_id,
                         expiry_time_ms=expiry_time_ms,
                         limit_ip=limit_ip,
@@ -439,7 +495,7 @@ class VPNService:
                     )
                 elif idx > 0:
                     logger.warning(
-                        "Не удалось добавить клиента %s в резервный LTE-inbound #%s: %s",
+                        "Не удалось добавить клиента %s в доп. inbound #%s: %s",
                         email,
                         inbound_id,
                         exc,
@@ -476,7 +532,7 @@ class VPNService:
                 )
             except XUIError as exc:
                 if idx > 0:
-                    # Если резервный LTE-inbound был подключён позже, автоматически создаём в нём клиента
+                    # Если дополнительный inbound был подключён позже, автоматически создаём в нём клиента
                     try:
                         await client.add_client(
                             inbound_id=inbound_id,
@@ -489,9 +545,37 @@ class VPNService:
                             enable=enable,
                             tg_id=tg_id,
                         )
+                    except XUIError as add_exc:
+                        if "duplicate email" in str(add_exc).lower():
+                            try:
+                                await client.add_client(
+                                    inbound_id=inbound_id,
+                                    client_uuid=client_uuid,
+                                    email=f"{email}_inb{inbound_id}",
+                                    sub_id=sub_id,
+                                    expiry_time_ms=expiry_time_ms,
+                                    limit_ip=limit_ip,
+                                    total_gb=0,
+                                    enable=enable,
+                                    tg_id=tg_id,
+                                )
+                            except Exception as retry_exc:
+                                logger.warning(
+                                    "Не удалось синхронизировать клиента %s в доп. inbound #%s: %s",
+                                    email,
+                                    inbound_id,
+                                    retry_exc,
+                                )
+                        else:
+                            logger.warning(
+                                "Не удалось синхронизировать клиента %s в доп. inbound #%s: %s",
+                                email,
+                                inbound_id,
+                                add_exc,
+                            )
                     except Exception as add_exc:
                         logger.warning(
-                            "Не удалось синхронизировать клиента %s в резервном LTE-inbound #%s: %s",
+                            "Не удалось синхронизировать клиента %s в доп. inbound #%s: %s",
                             email,
                             inbound_id,
                             add_exc,
@@ -523,29 +607,33 @@ class VPNService:
     async def fetch_live_mobile_profile(self, sub: Subscription) -> dict[str, Any]:
         """
         Запрашивает реальные настройки `serverNames` (SNI), `publicKey`, `shortId`, `port`
-        напрямую из основного (`XUI_INBOUND_ID`) и резервного (`XUI_MOBILE_INBOUND_ID`) инбаундов в 3X-UI
-        и возвращает готовый мульти-профиль с двумя LTE-подключениями.
+        напрямую из всех целевых подключений (`get_target_inbound_ids(server)`) в панели 3X-UI
+        и возвращает готовый мульти-профиль с европейскими узлами «🇪🇺 Европа • Узел 1..N».
         """
         server = sub.server or await self._get_server()
-        primary_info: XUIInboundRealityInfo | None = None
-        reserve_info: XUIInboundRealityInfo | None = None
+        target_inbounds = get_target_inbound_ids(server)
+        inbound_infos: list[XUIInboundRealityInfo | None] = []
 
         client = self._make_xui_client(server)
         try:
-            primary_info = await client.get_inbound_reality_info(server.inbound_id)
-            mob_id = settings.XUI_MOBILE_INBOUND_ID
-            if mob_id is not None and mob_id > 0 and mob_id != server.inbound_id:
-                reserve_info = await client.get_inbound_reality_info(mob_id)
-        except Exception as exc:
-            logger.debug("Используем кэшированные/дефолтные параметры Reality для /sub/mobile: %s", exc)
+            for inbound_id in target_inbounds:
+                try:
+                    info = await client.get_inbound_reality_info(inbound_id)
+                except Exception as exc:
+                    logger.debug(
+                        "Используем кэшированные/дефолтные параметры Reality для inbound #%s: %s",
+                        inbound_id,
+                        exc,
+                    )
+                    info = None
+                inbound_infos.append(info)
         finally:
             if self._xui_override is None:
                 await client.close()
 
         return build_tls_fragment_profile(
             sub,
-            primary_info=primary_info,
-            reserve_info=reserve_info,
+            inbound_infos=inbound_infos,
         )
 
     async def grant_or_extend_subscription(

@@ -44,6 +44,7 @@ from app.services.vpn import (
     build_subscription_url,
     calculate_extra_device_price,
     calculate_plan_renewal_price_with_slots,
+    get_target_inbound_ids,
 )
 from app.services.xui.client import XUIClient, XUIClientTraffic, XUIInboundRealityInfo
 from app.tasks.scheduler import (
@@ -370,70 +371,79 @@ async def test_dual_reality_inbounds_sync_and_mobile_multiprofile_formats(
     transport = ASGITransport(app=app)
 
     old_mob_id = settings.XUI_MOBILE_INBOUND_ID
+    old_extra_ids = settings.XUI_EXTRA_INBOUND_IDS
     object.__setattr__(settings, "XUI_MOBILE_INBOUND_ID", 2)
+    object.__setattr__(settings, "XUI_EXTRA_INBOUND_IDS", "2,3,4,5")
 
     try:
         repo = Repository(db_session)
+        server = await repo.get_active_server()
+        assert get_target_inbound_ids(server) == [1, 2, 3, 4, 5]
+
         user, _ = await repo.get_or_create_user(telegram_id=910500, username="lte_dual_user")
 
         mock_xui = AsyncMock(spec=XUIClient)
 
+        inbound_specs = {
+            1: (443, ["ya.ru"], "PBK_NODE_1", "aa11", "chrome"),
+            2: (8443, ["vk.com"], "PBK_NODE_2", "bb22", "ios"),
+            3: (2053, ["dl.google.com"], "PBK_NODE_3", "cc33", "chrome"),
+            4: (2083, ["cloudflare.com"], "PBK_NODE_4", "dd44", "ios"),
+            5: (2087, ["microsoft.com"], "PBK_NODE_5", "ee55", "chrome"),
+        }
+
         async def fake_get_inbound_info(inbound_id: int) -> XUIInboundRealityInfo:
-            if inbound_id == 1:
-                return XUIInboundRealityInfo(
-                    inbound_id=1,
-                    port=443,
-                    server_names=["ya.ru", "yandex.ru"],
-                    public_key="PBK_PRIMARY_111",
-                    short_id="ab11",
-                    fingerprint="chrome",
-                )
+            port, snis, pbk, sid, fp = inbound_specs[inbound_id]
             return XUIInboundRealityInfo(
-                inbound_id=2,
-                port=8443,
-                server_names=["vk.com", "st.userapi.com"],
-                public_key="PBK_RESERVE_222",
-                short_id="cd22",
-                fingerprint="ios",
+                inbound_id=inbound_id,
+                port=port,
+                server_names=snis,
+                public_key=pbk,
+                short_id=sid,
+                fingerprint=fp,
             )
 
         mock_xui.get_inbound_reality_info.side_effect = fake_get_inbound_info
         vpn = VPNService(db_session, xui_client_override=mock_xui)
 
-        # 1. Создание подписки синхронно вызывает add_client в inbound #1 и inbound #2 с одинаковыми uuid/subId/email
+        # 1. Создание подписки синхронно вызывает add_client во всех 5 инбаундах (1..5) с одинаковыми uuid/subId/email
         sub = await vpn.grant_or_extend_subscription(user, days=30)
-        assert mock_xui.add_client.await_count == 2
-        call1 = mock_xui.add_client.await_args_list[0].kwargs
-        call2 = mock_xui.add_client.await_args_list[1].kwargs
-        assert call1["inbound_id"] == 1
-        assert call2["inbound_id"] == 2
-        assert call1["client_uuid"] == call2["client_uuid"] == sub.xui_client_uuid
-        assert call1["sub_id"] == call2["sub_id"] == sub.sub_id
-        assert call1["email"] == call2["email"] == sub.xui_email
-        assert call1["expiry_time_ms"] == call2["expiry_time_ms"]
+        assert mock_xui.add_client.await_count == 5
+        for idx, expected_inb_id in enumerate([1, 2, 3, 4, 5]):
+            call_kw = mock_xui.add_client.await_args_list[idx].kwargs
+            assert call_kw["inbound_id"] == expected_inb_id
+            assert call_kw["client_uuid"] == sub.xui_client_uuid
+            assert call_kw["sub_id"] == sub.sub_id
+            assert call_kw["email"] == sub.xui_email
 
-        # 2. Докупка слота устройства обновляет limit_ip в обоих инбаундах
+        # 2. Докупка слота устройства обновляет limit_ip во всех 5 инбаундах
         mock_xui.update_client.reset_mock()
         await vpn.add_extra_device_slot(user, slots=1)
-        assert mock_xui.update_client.await_count == 2
-        assert mock_xui.update_client.await_args_list[0].kwargs["inbound_id"] == 1
-        assert mock_xui.update_client.await_args_list[1].kwargs["inbound_id"] == 2
-        assert mock_xui.update_client.await_args_list[1].kwargs["limit_ip"] == 4
+        assert mock_xui.update_client.await_count == 5
+        assert [c.kwargs["inbound_id"] for c in mock_xui.update_client.await_args_list] == [1, 2, 3, 4, 5]
+        assert mock_xui.update_client.await_args_list[4].kwargs["limit_ip"] == 4
 
-        # 3. Блокировка/разблокировка и перевыпуск ключа синхронизируют оба инбаунда
+        # 3. Блокировка/разблокировка и перевыпуск ключа синхронизируют все 5 инбаундов
         mock_xui.update_client.reset_mock()
         await vpn.set_client_enabled(sub, False)
-        assert mock_xui.update_client.await_count == 2
-        assert mock_xui.update_client.await_args_list[1].kwargs["enable"] is False
+        assert mock_xui.update_client.await_count == 5
+        assert mock_xui.update_client.await_args_list[4].kwargs["enable"] is False
         await vpn.set_client_enabled(sub, True)
 
         mock_xui.add_client.reset_mock()
         mock_xui.delete_client_by_uuid.reset_mock()
         sub = await vpn.reissue_key(user, force_by_admin=True)
-        assert mock_xui.delete_client_by_uuid.await_count == 2
-        assert mock_xui.add_client.await_count == 2
+        assert mock_xui.delete_client_by_uuid.await_count == 5
+        assert mock_xui.add_client.await_count == 5
 
-        # 4. Проверка смарт-эндпоинта GET /sub/mobile/{sub_id} (JSON, YAML, Base64)
+        # 4. Проверка смарт-эндпоинта GET /sub/mobile/{sub_id} (5 узлов «🇪🇺 Европа • Узел 1..5» в JSON, YAML, Base64)
+        expected_titles = [
+            "🇪🇺 Европа • Узел 1",
+            "🇪🇺 Европа • Узел 2",
+            "🇪🇺 Европа • Узел 3",
+            "🇪🇺 Европа • Узел 4",
+            "🇪🇺 Европа • Узел 5",
+        ]
         with patch("app.services.vpn.XUIClient.from_server", return_value=mock_xui):
             async with AsyncClient(transport=transport, base_url="http://testserver") as client:
                 # 4a. JSON (Happ / v2rayTun / Hiddify)
@@ -443,14 +453,12 @@ async def test_dual_reality_inbounds_sync_and_mobile_multiprofile_formats(
                 )
                 assert resp_json.status_code == 200
                 data = resp_json.json()
-                assert len(data["profiles"]) == 2
-                p1, p2 = data["profiles"][0], data["profiles"][1]
-                assert p1["name"] == "🇳🇱 GhostVPN • LTE Основной (Yandex SNI + Fragment)"
-                assert p2["name"] == "🇳🇱 GhostVPN • LTE Резерв (VK SNI + Fragment)"
-                assert p1["port"] == 443 and p1["publicKey"] == "PBK_PRIMARY_111" and p1["shortId"] == "ab11"
-                assert p1["sni"] == "ya.ru" and p1["fingerprint"] == "chrome"
-                assert p2["port"] == 8443 and p2["publicKey"] == "PBK_RESERVE_222" and p2["shortId"] == "cd22"
-                assert p2["sni"] == "vk.com" and p2["fingerprint"] == "ios"
+                assert len(data["profiles"]) == 5
+                assert [p["name"] for p in data["profiles"]] == expected_titles
+                p1, p2, p5 = data["profiles"][0], data["profiles"][1], data["profiles"][4]
+                assert p1["port"] == 443 and p1["publicKey"] == "PBK_NODE_1" and p1["shortId"] == "aa11" and p1["sni"] == "ya.ru"
+                assert p2["port"] == 8443 and p2["publicKey"] == "PBK_NODE_2" and p2["shortId"] == "bb22" and p2["sni"] == "vk.com"
+                assert p5["port"] == 2087 and p5["publicKey"] == "PBK_NODE_5" and p5["shortId"] == "ee55" and p5["sni"] == "microsoft.com"
                 assert p1["fragment"] == {
                     "enabled": True,
                     "packets": "tlshello",
@@ -466,10 +474,10 @@ async def test_dual_reality_inbounds_sync_and_mobile_multiprofile_formats(
                 )
                 assert resp_yaml.status_code == 200
                 assert "text/yaml" in resp_yaml.headers["content-type"]
-                assert "🇳🇱 GhostVPN • LTE Основной (Yandex SNI + Fragment)" in resp_yaml.text
-                assert "🇳🇱 GhostVPN • LTE Резерв (VK SNI + Fragment)" in resp_yaml.text
+                for title in expected_titles:
+                    assert title in resp_yaml.text
                 assert 'packets: "tlshello"' in resp_yaml.text
-                assert "PBK_RESERVE_222" in resp_yaml.text
+                assert "PBK_NODE_5" in resp_yaml.text
 
                 # 4c. Base64 (Shadowrocket / v2rayN User-Agent)
                 resp_b64 = await client.get(
@@ -478,10 +486,10 @@ async def test_dual_reality_inbounds_sync_and_mobile_multiprofile_formats(
                 )
                 assert resp_b64.status_code == 200
                 decoded_uris = unquote(base64.b64decode(resp_b64.text).decode("utf-8"))
-                assert "🇳🇱 GhostVPN • LTE Основной (Yandex SNI + Fragment)" in decoded_uris
-                assert "🇳🇱 GhostVPN • LTE Резерв (VK SNI + Fragment)" in decoded_uris
-                assert "pbk=PBK_PRIMARY_111" in decoded_uris
-                assert "pbk=PBK_RESERVE_222" in decoded_uris
+                for title in expected_titles:
+                    assert title in decoded_uris
+                assert "pbk=PBK_NODE_1" in decoded_uris
+                assert "pbk=PBK_NODE_5" in decoded_uris
 
                 # 5. Единая ссылка подписки {WEBHOOK_BASE_URL}/sub/mobile/{sub_id} везде по умолчанию
                 expected_unified = f"{settings.WEBHOOK_BASE_URL.rstrip('/')}/sub/mobile/{sub.sub_id}"
@@ -503,4 +511,5 @@ async def test_dual_reality_inbounds_sync_and_mobile_multiprofile_formats(
                     object.__setattr__(settings, "WEBHOOK_BASE_URL", old_wh)
     finally:
         object.__setattr__(settings, "XUI_MOBILE_INBOUND_ID", old_mob_id)
+        object.__setattr__(settings, "XUI_EXTRA_INBOUND_IDS", old_extra_ids)
         app.dependency_overrides.clear()

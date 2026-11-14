@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     XUI_PASSWORD: str = Field(default="admin")
     XUI_INBOUND_ID: int = Field(default=1)
     XUI_MOBILE_INBOUND_ID: int | None = Field(default=None)
+    XUI_EXTRA_INBOUND_IDS: str = Field(default="")
     XUI_SUB_BASE_URL: str = Field(default="https://127.0.0.1:2096/sub")
     XUI_VERIFY_SSL: bool = Field(default=False)
     XUI_SERVER_NAME: str = Field(default="🇳🇱 Нидерланды (VLESS Reality)")
