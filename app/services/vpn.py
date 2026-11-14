@@ -54,6 +54,43 @@ FRAGMENT_SPEC: dict[str, Any] = {
     "interval": "10-15",
 }
 
+ROUTING_SPEC: dict[str, Any] = {
+    "domainStrategy": "IPIfNonMatch",
+    "rules": [
+        {
+            "type": "field",
+            "domain": ["geosite:category-ads-all"],
+            "outboundTag": "block",
+            "action": "block",
+        },
+        {
+            "type": "field",
+            "domain": [
+                "geosite:category-ru",
+                "domain:ru",
+                "domain:рф",
+                "domain:xn--p1ai",
+                "domain:su",
+                "regexp:.*\\.(ru|рф|xn--p1ai|su)$",
+            ],
+            "outboundTag": "direct",
+            "action": "direct",
+        },
+        {
+            "type": "field",
+            "ip": ["geoip:ru", "geoip:private"],
+            "outboundTag": "direct",
+            "action": "direct",
+        },
+        {
+            "type": "field",
+            "network": "tcp,udp",
+            "outboundTag": "proxy",
+            "action": "proxy",
+        },
+    ],
+}
+
 
 def generate_sub_id(length: int = 16) -> str:
     return "".join(secrets.choice(ALPHABET) for _ in range(length))
@@ -155,6 +192,15 @@ def calculate_plan_renewal_price_with_slots(
 
 
 def _extract_server_hostname(server: Server | None) -> str:
+    custom_domain = (getattr(settings, "VPN_PUBLIC_DOMAIN", "") or "").strip()
+    if custom_domain:
+        parsed_dom = urlparse(
+            custom_domain if "://" in custom_domain else f"https://{custom_domain}"
+        )
+        if parsed_dom.hostname:
+            return parsed_dom.hostname
+        return custom_domain.strip("/")
+
     if server is not None:
         for raw_url in (server.sub_base_url, server.host):
             if raw_url:
@@ -338,6 +384,7 @@ def build_tls_fragment_profile(
             "queryStrategy": "UseIPv4",
             "strategy": "prefer_ipv4",
         },
+        "routing": dict(ROUTING_SPEC),
         "fragment": dict(FRAGMENT_SPEC),
         "ip_strategy": "UseIPv4",
         "prefer_ipv4": True,
@@ -415,6 +462,14 @@ def render_mobile_yaml_profile(multi_profile: dict[str, Any]) -> str:
     lines.extend(
         [
             "rules:",
+            "  - GEOSITE,category-ads-all,REJECT",
+            "  - GEOSITE,category-ru,DIRECT",
+            "  - DOMAIN-SUFFIX,ru,DIRECT",
+            "  - DOMAIN-SUFFIX,рф,DIRECT",
+            "  - DOMAIN-SUFFIX,xn--p1ai,DIRECT",
+            "  - DOMAIN-SUFFIX,su,DIRECT",
+            "  - GEOIP,private,DIRECT,no-resolve",
+            "  - GEOIP,RU,DIRECT",
             "  - MATCH,👻 GhostVPN LTE",
         ]
     )

@@ -17,7 +17,12 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.handlers.profile import format_subscription_card
-from app.bot.keyboards.user import back_to_menu_kb, subscription_card_kb
+from app.bot.keyboards.user import (
+    SHARE_FRIEND_TEXT,
+    back_to_menu_kb,
+    build_friend_share_url,
+    subscription_card_kb,
+)
 from app.bot.loader import bot, dp
 from app.bot.utils import format_dt_msk
 from app.core.config import settings
@@ -274,6 +279,8 @@ async def webapp_me(
         "online_ips": sub.online_ips_count if sub else 0,
         "limit_ip": sub.limit_ip if sub else settings.DEFAULT_LIMIT_IP,
         "ref_link": f"https://t.me/{settings.BOT_USERNAME}?start=ref_{user.telegram_id}",
+        "share_url": build_friend_share_url(user.telegram_id),
+        "share_text": SHARE_FRIEND_TEXT,
         "plans": [
             {
                 "id": p.id,
@@ -421,6 +428,7 @@ async def get_mobile_fragment_subscription(
             f"upload=0; download={sub.used_traffic_bytes}; total=0; "
             f"expire={int(sub.expires_at.timestamp())}"
         ),
+        "X-Routing-Policy": "ads=block;ru=direct;default=proxy",
     }
 
     ua = (request.headers.get("user-agent") or "").lower()

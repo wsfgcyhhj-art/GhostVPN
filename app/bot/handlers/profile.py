@@ -11,6 +11,7 @@ from app.bot.keyboards.user import (
     main_menu_kb,
     manage_slots_kb,
     mobile_boost_kb,
+    referral_kb,
     reissue_confirm_kb,
     subscription_card_kb,
 )
@@ -413,7 +414,7 @@ async def cb_referral_info(
         callback,
         banner_key="referral",
         caption=text,
-        reply_markup=back_to_menu_kb(db_user.language),
+        reply_markup=referral_kb(db_user),
         lang=db_user.language,
         repo=repo,
     )

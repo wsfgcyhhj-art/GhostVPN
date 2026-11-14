@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from typing import Sequence
+from urllib.parse import quote
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -10,6 +11,22 @@ from app.core.config import settings
 from app.core.i18n import t
 from app.db.models import Plan, Subscription, User
 from app.services.vpn import calculate_plan_renewal_price_with_slots
+
+SHARE_FRIEND_TEXT = (
+    "Держи бесплатный доступ к быстрому интернету без рекламы — "
+    "работает и на домашней сети, и на мобильной связи, "
+    "российские банки открываются без отключения"
+)
+
+
+def build_friend_share_url(user_telegram_id: int) -> str:
+    """Формирует ссылку t.me/share/url для пересылки приглашения другу в 1 клик."""
+    bot_username = (settings.BOT_USERNAME or "GhostVPN_Bot").lstrip("@")
+    ref_link = f"https://t.me/{bot_username}?start=ref_{user_telegram_id}"
+    return (
+        f"https://t.me/share/url?url={quote(ref_link, safe='')}"
+        f"&text={quote(SHARE_FRIEND_TEXT, safe='')}"
+    )
 
 
 def main_menu_kb(user: User, is_admin: bool = False) -> InlineKeyboardMarkup:
@@ -138,6 +155,12 @@ def subscription_card_kb(user: User, sub: Subscription | None) -> InlineKeyboard
                     callback_data="profile:unlock_ip",
                 )
             )
+    b.row(
+        InlineKeyboardButton(
+            text=t("btn_gift_friend", lang),
+            url=build_friend_share_url(user.telegram_id),
+        )
+    )
     b.row(
         InlineKeyboardButton(text=t("btn_buy", lang), callback_data="plans:list"),
         InlineKeyboardButton(text=t("btn_support", lang), url=settings.SUPPORT_URL),
@@ -356,6 +379,19 @@ def mobile_boost_kb(sub: Subscription | None, lang: str = "ru") -> InlineKeyboar
         InlineKeyboardButton(text="🔑 К подписке", callback_data="profile:sub"),
         InlineKeyboardButton(text="❓ В раздел Помощи", callback_data="help:faq"),
     )
+    return b.as_markup()
+
+
+def referral_kb(user: User) -> InlineKeyboardMarkup:
+    lang = user.language or "ru"
+    b = InlineKeyboardBuilder()
+    b.row(
+        InlineKeyboardButton(
+            text=t("btn_gift_friend", lang),
+            url=build_friend_share_url(user.telegram_id),
+        )
+    )
+    b.row(InlineKeyboardButton(text=t("btn_back_menu", lang), callback_data="menu:home"))
     return b.as_markup()
 
 

@@ -8,6 +8,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "Мы сделали всё максимально просто: нажал одну кнопку — и всё летает (YouTube в 4K, Instagram, звонки и сайты без тормозов).\n\n"
         "✨ <b>Почему с нами уютно:</b>\n"
         "• 🇳🇱 Быстрый сервер в Нидерландах (до 500 Мбит/с)\n"
+        "• 🏦 <b>Российские банки и Госуслуги работают без отключения</b>\n"
+        "• 🚫 <b>Встроенная блокировка рекламы</b>\n"
         "• 📱 До <b>{limit_ip} устройств</b> одновременно (телефон, ноутбук, планшет)\n"
         "• 🛡 Обход глушилок на мобильном интернете (TLS Fragment)\n\n"
         "📊 <b>Твой статус:</b> {status_line}\n"
@@ -39,12 +41,16 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "btn_reissue": "🔄 Обновить ссылку",
         "btn_connect_oneclick": "📲 Подключить в 1 клик (Wi-Fi + LTE)",
         "btn_mobile_boost": "📶 Не грузит на мобильном?",
+        "btn_gift_friend": "🎁 Подарить 3 дня другу",
+        "share_friend_text": "Держи бесплатный доступ к быстрому интернету без рекламы — работает и на домашней сети, и на мобильной связи, российские банки открываются без отключения",
     },
     "en": {
         "welcome_title": "👻 <b>Welcome to GhostVPN — your fast, friendly, borderless internet!</b>\n\n"
         "We made everything effortless: tap one button and enjoy 4K streaming, calls, and websites without limits.\n\n"
         "✨ <b>Why you'll love GhostVPN:</b>\n"
         "• 🇳🇱 Ultra-fast Netherlands location (up to 500 Mbps)\n"
+        "• 🏦 <b>Russian banks & Gosuslugi work directly without disconnecting</b>\n"
+        "• 🚫 <b>Built-in ad & tracker blocker</b>\n"
         "• 📱 Up to <b>{limit_ip} devices</b> at the same time\n"
         "• 🛡 Mobile ISP anti-throttling (TLS Fragment ready)\n\n"
         "📊 <b>Your status:</b> {status_line}\n"
@@ -76,6 +82,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "btn_reissue": "🔄 Re-issue Link",
         "btn_connect_oneclick": "📲 1-Click Connect (Wi-Fi + LTE)",
         "btn_mobile_boost": "📶 Mobile (LTE) Help",
+        "btn_gift_friend": "🎁 Gift 3 Days to a Friend",
+        "share_friend_text": "Держи бесплатный доступ к быстрому интернету без рекламы — работает и на домашней сети, и на мобильной связи, российские банки открываются без отключения",
     },
 }
 

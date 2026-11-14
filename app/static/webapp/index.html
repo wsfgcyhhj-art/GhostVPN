@@ -282,6 +282,10 @@
   <!-- Магазин тарифов -->
   <div class="card">
     <div class="card-title">🔥 Тарифы и Продление</div>
+    <div style="margin-bottom:10px;padding:10px 12px;background:var(--bg-card-alt);border:1px solid var(--border-hud);border-radius:10px;font-size:12px;color:var(--ghost-white);line-height:1.5;">
+      🏦 <b>Российские банки и Госуслуги работают без отключения</b><br/>
+      🚫 <b>Встроенная блокировка рекламы</b>
+    </div>
     <div style="margin-bottom:10px;display:flex;gap:6px;">
       <select id="payProvider" style="width:100%;padding:10px;border-radius:10px;background:var(--bg-card-alt);color:#fff;border:1px solid var(--border-hud);font-weight:600;">
         <option value="RUB_GATEWAY">💳 СБП / Карта РФ (FreeKassa)</option>
@@ -298,6 +302,7 @@
     <p style="font-size:12px;color:var(--text-muted);margin:0 0 10px;">
       Делись ссылкой с друзьями — 15% с каждой их оплаты начисляется тебе в рублях на баланс!
     </p>
+    <button class="btn btn-neon" onclick="shareWithFriend()">🎁 Подарить 3 дня другу</button>
     <button class="btn btn-dark" onclick="copyRefLink()">🔗 Скопировать реферальную ссылку</button>
   </div>
 
@@ -315,6 +320,7 @@
       sub_url: "",
       mobile_sub_url: "",
       ref_link: "",
+      share_url: "",
       plans: []
     };
 
@@ -346,6 +352,19 @@
     function copyRefLink() {
       if (!stateData.ref_link) return;
       navigator.clipboard.writeText(stateData.ref_link).then(() => showToast("✅ Реферальная ссылка скопирована!"));
+    }
+
+    function shareWithFriend() {
+      const shareText = "Держи бесплатный доступ к быстрому интернету без рекламы — работает и на домашней сети, и на мобильной связи, российские банки открываются без отключения";
+      const refUrl = stateData.ref_link || "https://t.me/";
+      const shareLink = stateData.share_url || (
+        "https://t.me/share/url?url=" + encodeURIComponent(refUrl) + "&text=" + encodeURIComponent(shareText)
+      );
+      if (tg && tg.openTelegramLink) {
+        tg.openTelegramLink(shareLink);
+      } else {
+        window.open(shareLink, "_blank");
+      }
     }
 
     function openApp(appName) {

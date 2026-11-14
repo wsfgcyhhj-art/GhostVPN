@@ -54,6 +54,7 @@ class Settings(BaseSettings):
     XUI_VERIFY_SSL: bool = Field(default=False)
     XUI_SERVER_NAME: str = Field(default="🇳🇱 Нидерланды (VLESS Reality)")
     XUI_SNI_DOMAINS: str = Field(default="dl.google.com,ya.ru,vk.com")
+    VPN_PUBLIC_DOMAIN: str = Field(default="")
 
     # --- Payments & Referral ---
     REFERRAL_PERCENT: int = Field(default=15)

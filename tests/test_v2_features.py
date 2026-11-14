@@ -483,6 +483,29 @@ async def test_dual_reality_inbounds_sync_and_mobile_multiprofile_formats(
                 }
                 assert p1["ip_strategy"] == "UseIPv4" and p1["prefer_ipv4"] is True
 
+                # Проверка правил маршрутизации (блокировка рекламы + прямой доступ к РФ банкам/сайтам)
+                routing = data.get("routing", {})
+                rules = routing.get("rules", [])
+                assert any(
+                    r.get("outboundTag") == "block" and "geosite:category-ads-all" in r.get("domain", [])
+                    for r in rules
+                )
+                assert any(
+                    r.get("outboundTag") == "direct"
+                    and "geosite:category-ru" in r.get("domain", [])
+                    and "domain:ru" in r.get("domain", [])
+                    and "domain:рф" in r.get("domain", [])
+                    and "domain:su" in r.get("domain", [])
+                    for r in rules
+                )
+                assert any(
+                    r.get("outboundTag") == "direct"
+                    and "geoip:ru" in r.get("ip", [])
+                    and "geoip:private" in r.get("ip", [])
+                    for r in rules
+                )
+                assert rules[-1].get("outboundTag") == "proxy"
+
                 # 4b. YAML (Clash / Mihomo User-Agent)
                 resp_yaml = await client.get(
                     f"/sub/mobile/{sub.sub_id}",
@@ -494,18 +517,44 @@ async def test_dual_reality_inbounds_sync_and_mobile_multiprofile_formats(
                     assert title in resp_yaml.text
                 assert 'packets: "tlshello"' in resp_yaml.text
                 assert "PBK_NODE_5" in resp_yaml.text
+                assert "GEOSITE,category-ads-all,REJECT" in resp_yaml.text
+                assert "GEOSITE,category-ru,DIRECT" in resp_yaml.text
+                assert "DOMAIN-SUFFIX,ru,DIRECT" in resp_yaml.text
+                assert "DOMAIN-SUFFIX,рф,DIRECT" in resp_yaml.text
+                assert "DOMAIN-SUFFIX,su,DIRECT" in resp_yaml.text
+                assert "GEOIP,RU,DIRECT" in resp_yaml.text
+                assert "GEOIP,private,DIRECT,no-resolve" in resp_yaml.text
 
-                # 4c. Base64 (Shadowrocket / v2rayN User-Agent)
-                resp_b64 = await client.get(
-                    f"/sub/mobile/{sub.sub_id}",
-                    headers={"User-Agent": "Shadowrocket/2.2.40"},
-                )
-                assert resp_b64.status_code == 200
-                decoded_uris = unquote(base64.b64decode(resp_b64.text).decode("utf-8"))
-                for title in expected_titles:
-                    assert title in decoded_uris
-                assert "pbk=PBK_NODE_1" in decoded_uris
-                assert "pbk=PBK_NODE_5" in decoded_uris
+                # 4c. Base64 (Shadowrocket / v2rayN User-Agent) + проверка VPN_PUBLIC_DOMAIN
+                old_pub_dom = settings.VPN_PUBLIC_DOMAIN
+                try:
+                    object.__setattr__(settings, "VPN_PUBLIC_DOMAIN", "eu.ghostvpn-custom.org")
+                    resp_b64 = await client.get(
+                        f"/sub/mobile/{sub.sub_id}",
+                        headers={"User-Agent": "Shadowrocket/2.2.40"},
+                    )
+                    assert resp_b64.status_code == 200
+                    decoded_uris = unquote(base64.b64decode(resp_b64.text).decode("utf-8"))
+                    for title in expected_titles:
+                        assert title in decoded_uris
+                    assert "@eu.ghostvpn-custom.org:443" in decoded_uris
+                    assert "pbk=PBK_NODE_1" in decoded_uris
+                    assert "pbk=PBK_NODE_5" in decoded_uris
+                finally:
+                    object.__setattr__(settings, "VPN_PUBLIC_DOMAIN", old_pub_dom)
+
+                # 4d. Проверка кнопки «🎁 Подарить 3 дня другу» и текстов преимуществ
+                from app.bot.keyboards.user import SHARE_FRIEND_TEXT, build_friend_share_url, referral_kb
+
+                share_url = build_friend_share_url(user.telegram_id)
+                assert share_url.startswith("https://t.me/share/url?url=")
+                assert unquote(share_url).endswith(SHARE_FRIEND_TEXT)
+                ref_markup = referral_kb(user)
+                assert ref_markup.inline_keyboard[0][0].text == "🎁 Подарить 3 дня другу"
+                assert ref_markup.inline_keyboard[0][0].url == share_url
+                welcome_ru = t("welcome_title", "ru", limit_ip=3, status_line="OK", balance=0, terms_url="#")
+                assert "Российские банки и Госуслуги работают без отключения" in welcome_ru
+                assert "Встроенная блокировка рекламы" in welcome_ru
 
                 # 5. Единая ссылка подписки {WEBHOOK_BASE_URL}/sub/mobile/{sub_id} везде по умолчанию
                 expected_unified = f"{settings.WEBHOOK_BASE_URL.rstrip('/')}/sub/mobile/{sub.sub_id}"
