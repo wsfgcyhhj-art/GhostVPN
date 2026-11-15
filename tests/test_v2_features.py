@@ -445,8 +445,8 @@ async def test_dual_reality_inbounds_sync_and_mobile_multiprofile_formats(
         # и автоматического добавления клиента в новые инбаунды #2..5, где его ещё не было
         mock_xui.add_client.reset_mock()
         expected_titles = [
-            "⚡️ Узел 1",
-            "⚡️ Узел 2",
+            "🇳🇱 GhostVPN • Основной (+ Fragment)",
+            "🇳🇱 GhostVPN • Резерв XHTTP (+ Fragment)",
             "⚡️ Узел 3",
             "⚡️ Узел 4",
             "⚡️ Узел 5",

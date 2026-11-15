@@ -32,18 +32,23 @@ if TYPE_CHECKING:
 
 ALPHABET = string.ascii_lowercase + string.digits
 
+NODE_TITLE_PRIMARY = "🇳🇱 GhostVPN • Основной (+ Fragment)"
+NODE_TITLE_RESERVE = "🇳🇱 GhostVPN • Резерв XHTTP (+ Fragment)"
+
 EU_NODE_TITLES: list[str] = [
-    "⚡️ Узел 1",
-    "⚡️ Узел 2",
+    NODE_TITLE_PRIMARY,
+    NODE_TITLE_RESERVE,
     "⚡️ Узел 3",
     "⚡️ Узел 4",
     "⚡️ Узел 5",
 ]
-NODE_TITLE_PRIMARY = EU_NODE_TITLES[0]
-NODE_TITLE_RESERVE = EU_NODE_TITLES[1]
 
 
 def format_eu_node_title(index_1_based: int) -> str:
+    if index_1_based == 1:
+        return NODE_TITLE_PRIMARY
+    if index_1_based == 2:
+        return NODE_TITLE_RESERVE
     return f"⚡️ Узел {index_1_based}"
 
 
@@ -99,7 +104,7 @@ def generate_sub_id(length: int = 16) -> str:
 def build_subscription_url(sub_id: str, server: Server | None = None) -> str:
     """
     Возвращает единую универсальную мульти-подписку `{WEBHOOK_BASE_URL}/sub/mobile/{sub_id}`
-    (включающую оба Reality-профиля с Yandex/VK SNI и TLS Fragment для Wi-Fi и LTE).
+    (включающую профили «🇳🇱 GhostVPN • Основной (+ Fragment)» и «🇳🇱 GhostVPN • Резерв XHTTP (+ Fragment)» для Wi-Fi и LTE).
     Если `WEBHOOK_BASE_URL` пустой — возвращает запасной фоллбэк на прямую ссылку 3X-UI (`XUI_SUB_BASE_URL/{sub_id}`).
     """
     web_base = (settings.WEBHOOK_BASE_URL or "").strip().rstrip("/")

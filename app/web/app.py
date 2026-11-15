@@ -399,8 +399,8 @@ async def get_mobile_fragment_subscription(
     Умный мульти-эндпоинт для обхода мобильных глушилок (LTE / ТСПУ).
     Считывает актуальные `serverNames` (SNI), `publicKey`, `shortId` и `port` из основного
     (`XUI_INBOUND_ID`) и резервного (`XUI_MOBILE_INBOUND_ID`) инбаундов в 3X-UI и отдаёт оба подключения:
-      1) «🇳🇱 GhostVPN • LTE Основной (Yandex SNI + Fragment)»
-      2) «🇳🇱 GhostVPN • LTE Резерв (VK SNI + Fragment)»
+      1) «🇳🇱 GhostVPN • Основной (+ Fragment)»
+      2) «🇳🇱 GhostVPN • Резерв XHTTP (+ Fragment)»
     В зависимости от `User-Agent` (Happ / v2rayTun / Hiddify / Clash / Shadowrocket) или `?format=yaml|base64|json`
     возвращает JSON мульти-профиль, YAML-конфиг или Base64-подписку.
     """

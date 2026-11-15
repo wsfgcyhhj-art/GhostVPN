@@ -43,6 +43,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "btn_mobile_boost": "📶 Не грузит на мобильном?",
         "btn_gift_friend": "🎁 Подарить 3 дня другу",
         "share_friend_text": "Держи бесплатный доступ к быстрому интернету без рекламы — работает и на домашней сети, и на мобильной связи, российские банки открываются без отключения",
+        "node_primary_title": "🇳🇱 GhostVPN • Основной (+ Fragment)",
+        "node_reserve_title": "🇳🇱 GhostVPN • Резерв XHTTP (+ Fragment)",
     },
     "en": {
         "welcome_title": "👻 <b>Welcome to GhostVPN — your fast, friendly, borderless internet!</b>\n\n"
@@ -84,6 +86,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "btn_mobile_boost": "📶 Mobile (LTE) Help",
         "btn_gift_friend": "🎁 Gift 3 Days to a Friend",
         "share_friend_text": "Держи бесплатный доступ к быстрому интернету без рекламы — работает и на домашней сети, и на мобильной связи, российские банки открываются без отключения",
+        "node_primary_title": "🇳🇱 GhostVPN • Основной (+ Fragment)",
+        "node_reserve_title": "🇳🇱 GhostVPN • Резерв XHTTP (+ Fragment)",
     },
 }
 
