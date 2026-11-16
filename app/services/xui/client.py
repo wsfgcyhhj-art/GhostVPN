@@ -233,6 +233,34 @@ class XUIClient:
         return data
 
     @staticmethod
+    def build_client_dict(
+        *,
+        client_uuid: str,
+        email: str,
+        sub_id: str,
+        expiry_time_ms: int,
+        limit_ip: int = 3,
+        total_gb: int = 0,
+        enable: bool = True,
+        tg_id: str | int = "",
+        flow: str = "xtls-rprx-vision",
+    ) -> dict[str, Any]:
+        """Формирует словарь клиента client_obj для REST API 3X-UI v3.11.0."""
+        return {
+            "id": client_uuid,
+            "uuid": client_uuid,
+            "flow": flow,
+            "email": email,
+            "limitIp": limit_ip,
+            "totalGB": total_gb,
+            "expiryTime": expiry_time_ms,
+            "enable": enable,
+            "tgId": int(tg_id) if str(tg_id).isdigit() else 0,
+            "subId": sub_id,
+            "reset": 0,
+        }
+
+    @staticmethod
     def build_client_settings(
         *,
         client_uuid: str,
@@ -245,7 +273,7 @@ class XUIClient:
         tg_id: str = "",
         flow: str = "xtls-rprx-vision",
     ) -> str:
-        """Формирует сериализованную JSON-строку `settings` для 3X-UI v3.11.0."""
+        """Формирует сериализованную JSON-строку `settings` (для совместимости)."""
         payload = {
             "clients": [
                 {
@@ -266,76 +294,232 @@ class XUIClient:
 
     async def add_client(
         self,
-        *,
-        inbound_id: int,
-        client_uuid: str,
-        email: str,
-        sub_id: str,
-        expiry_time_ms: int,
+        inbound_id: int | None = None,
+        client_uuid: str | None = None,
+        email: str | None = None,
+        sub_id: str | None = None,
+        expiry_time_ms: int | None = None,
         limit_ip: int = 3,
         total_gb: int = 0,
         enable: bool = True,
-        tg_id: str = "",
+        tg_id: str | int = "",
+        flow: str = "xtls-rprx-vision",
+        **kwargs: Any,
     ) -> None:
-        settings_str = self.build_client_settings(
-            client_uuid=client_uuid,
-            email=email,
-            sub_id=sub_id,
-            expiry_time_ms=expiry_time_ms,
-            limit_ip=limit_ip,
-            total_gb=total_gb,
-            enable=enable,
-            tg_id=tg_id,
+        """
+        Добавляет клиента в 3X-UI v3.11.0 через POST panel/api/clients/add.
+        Если клиент с таким email уже существует глобально в панели (дубликат email),
+        автоматически выполняет fallback на POST panel/api/clients/{email}/attach.
+        """
+        inb_id = inbound_id if inbound_id is not None else kwargs.get("inbound_id")
+        c_uuid = client_uuid or kwargs.get("client_uuid")
+        c_email = email or kwargs.get("email")
+        s_id = str(sub_id if sub_id is not None else kwargs.get("sub_id", ""))
+        exp_ms = int(expiry_time_ms if expiry_time_ms is not None else kwargs.get("expiry_time_ms", 0))
+        lim_ip = int(kwargs.get("limit_ip", limit_ip))
+        tot_gb = int(kwargs.get("total_gb", total_gb))
+        enab = bool(kwargs.get("enable", enable))
+        t_id = kwargs.get("tg_id", tg_id)
+        flw = str(kwargs.get("flow", flow))
+
+        if inb_id is None or not c_uuid or not c_email:
+            raise XUIError("Параметры inbound_id, client_uuid и email обязательны для add_client")
+
+        client_obj = self.build_client_dict(
+            client_uuid=c_uuid,
+            email=c_email,
+            sub_id=s_id,
+            expiry_time_ms=exp_ms,
+            limit_ip=lim_ip,
+            total_gb=tot_gb,
+            enable=enab,
+            tg_id=t_id,
+            flow=flw,
         )
-        data = await self._request(
-            "POST",
-            "panel/api/inbounds/addClient",
-            json_body={"id": inbound_id, "settings": settings_str},
-        )
-        if not data.get("success"):
-            msg = str(data.get("msg", ""))
-            raise XUIError(f"Ошибка addClient в 3X-UI: {msg}")
+
+        add_ok = False
+        add_msg = ""
+        try:
+            data = await self._request(
+                "POST",
+                "panel/api/clients/add",
+                json_body={"client": client_obj, "inboundIds": [inb_id]},
+            )
+            add_ok = bool(data.get("success"))
+            if not add_ok:
+                add_msg = str(data.get("msg", ""))
+        except XUIError as exc:
+            add_msg = str(exc)
+
+        if not add_ok:
+            logger.debug(
+                "3X-UI panel/api/clients/add не вернул success (%s), пробуем привязать через clients/%s/attach",
+                add_msg,
+                c_email,
+            )
+            attach_data = await self._request(
+                "POST",
+                f"panel/api/clients/{c_email}/attach",
+                json_body={"inboundIds": [inb_id]},
+            )
+            if not attach_data.get("success"):
+                msg = str(
+                    attach_data.get("msg")
+                    or add_msg
+                    or "Не удалось добавить или привязать клиента"
+                )
+                raise XUIError(f"Ошибка add/attach client в 3X-UI: {msg}")
 
     async def update_client(
         self,
-        *,
-        inbound_id: int,
-        client_uuid: str,
-        email: str,
-        sub_id: str,
-        expiry_time_ms: int,
+        inbound_id: int | None = None,
+        client_uuid: str | None = None,
+        email: str | None = None,
+        sub_id: str | None = None,
+        expiry_time_ms: int | None = None,
         limit_ip: int = 3,
         total_gb: int = 0,
         enable: bool = True,
-        tg_id: str = "",
+        tg_id: str | int = "",
+        flow: str = "xtls-rprx-vision",
+        **kwargs: Any,
     ) -> None:
-        settings_str = self.build_client_settings(
-            client_uuid=client_uuid,
-            email=email,
-            sub_id=sub_id,
-            expiry_time_ms=expiry_time_ms,
-            limit_ip=limit_ip,
-            total_gb=total_gb,
-            enable=enable,
-            tg_id=tg_id,
-        )
-        data = await self._request(
-            "POST",
-            f"panel/api/inbounds/updateClient/{client_uuid}",
-            json_body={"id": inbound_id, "settings": settings_str},
-        )
-        if not data.get("success"):
-            msg = str(data.get("msg", ""))
-            raise XUIError(f"Ошибка updateClient в 3X-UI: {msg}")
+        """
+        Обновляет данные клиента в 3X-UI v3.11.0 через POST panel/api/clients/update/{email}
+        и гарантирует привязку к инбаунду через POST panel/api/clients/{email}/attach.
+        """
+        inb_id = inbound_id if inbound_id is not None else kwargs.get("inbound_id")
+        c_uuid = client_uuid or kwargs.get("client_uuid")
+        c_email = email or kwargs.get("email")
+        s_id = str(sub_id if sub_id is not None else kwargs.get("sub_id", ""))
+        exp_ms = int(expiry_time_ms if expiry_time_ms is not None else kwargs.get("expiry_time_ms", 0))
+        lim_ip = int(kwargs.get("limit_ip", limit_ip))
+        tot_gb = int(kwargs.get("total_gb", total_gb))
+        enab = bool(kwargs.get("enable", enable))
+        t_id = kwargs.get("tg_id", tg_id)
+        flw = str(kwargs.get("flow", flow))
 
-    async def delete_client_by_uuid(self, *, inbound_id: int, client_uuid: str) -> None:
+        if inb_id is None or not c_uuid or not c_email:
+            raise XUIError("Параметры inbound_id, client_uuid и email обязательны для update_client")
+
+        client_obj = self.build_client_dict(
+            client_uuid=c_uuid,
+            email=c_email,
+            sub_id=s_id,
+            expiry_time_ms=exp_ms,
+            limit_ip=lim_ip,
+            total_gb=tot_gb,
+            enable=enab,
+            tg_id=t_id,
+            flow=flw,
+        )
+
         data = await self._request(
             "POST",
-            f"panel/api/inbounds/{inbound_id}/delClient/{client_uuid}",
+            f"panel/api/clients/update/{c_email}",
+            json_body=client_obj,
         )
         if not data.get("success"):
             msg = str(data.get("msg", ""))
-            raise XUIError(f"Ошибка delClient в 3X-UI: {msg}")
+            raise XUIError(f"Ошибка update client в 3X-UI: {msg}")
+
+        # Дополнительно гарантируем привязку к нужному узлу
+        try:
+            await self._request(
+                "POST",
+                f"panel/api/clients/{c_email}/attach",
+                json_body={"inboundIds": [inb_id]},
+            )
+        except Exception as exc:
+            logger.debug(
+                "Привязка (attach) клиента %s к inbound #%s после update: %s",
+                c_email,
+                inb_id,
+                exc,
+            )
+
+    async def get_inbounds(self) -> list[dict[str, Any]]:
+        """Возвращает список всех инбаундов панели 3X-UI (`panel/api/inbounds/list`)."""
+        for method in ("GET", "POST"):
+            try:
+                data = await self._request(method, "panel/api/inbounds/list")
+                if data.get("success") and isinstance(data.get("obj"), list):
+                    return data["obj"]
+            except Exception as exc:
+                logger.debug(
+                    "Попытка %s panel/api/inbounds/list не удалась: %s",
+                    method,
+                    exc,
+                )
+        return []
+
+    async def delete_client_by_uuid(
+        self,
+        inbound_id: int | None = None,
+        client_uuid: str | None = None,
+        *,
+        email: str | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """
+        Отвязывает клиента от инбаунда в 3X-UI v3.11.0 через POST panel/api/clients/{email}/detach.
+        Email определяется автоматически по client_uuid через get_inbounds().
+        """
+        inb_id = inbound_id if inbound_id is not None else kwargs.get("inbound_id")
+        resolved_uuid = client_uuid or kwargs.get("client_uuid")
+        if inb_id is None or not resolved_uuid:
+            raise XUIError("Параметры inbound_id и client_uuid обязательны для delete_client_by_uuid")
+
+        target_email = email
+        if not target_email:
+            inbounds = await self.get_inbounds()
+            for inb in inbounds:
+                if str(inb.get("id")) == str(inb_id):
+                    raw_settings = inb.get("settings", "{}")
+                    if isinstance(raw_settings, str):
+                        try:
+                            settings_dict = (
+                                json.loads(raw_settings) if raw_settings.strip() else {}
+                            )
+                        except Exception:
+                            settings_dict = {}
+                    elif isinstance(raw_settings, dict):
+                        settings_dict = raw_settings
+                    else:
+                        settings_dict = {}
+
+                    for c in settings_dict.get("clients", []):
+                        if isinstance(c, dict):
+                            cid = str(c.get("id") or c.get("uuid") or "").strip()
+                            if cid.lower() == resolved_uuid.lower():
+                                target_email = str(c.get("email") or "").strip()
+                                break
+
+                    if not target_email:
+                        for cs in inb.get("clientStats", []):
+                            if isinstance(cs, dict):
+                                cid = str(cs.get("id") or cs.get("uuid") or "").strip()
+                                if cid.lower() == resolved_uuid.lower():
+                                    target_email = str(cs.get("email") or "").strip()
+                                    break
+                    break
+
+        if not target_email:
+            logger.warning(
+                "Клиент с UUID %s не найден в inbound #%s для отвязки (detach)",
+                resolved_uuid,
+                inb_id,
+            )
+            raise XUIError(f"Клиент с UUID {resolved_uuid} не найден в inbound #{inb_id}")
+
+        data = await self._request(
+            "POST",
+            f"panel/api/clients/{target_email}/detach",
+            json_body={"inboundIds": [inb_id]},
+        )
+        if not data.get("success"):
+            msg = str(data.get("msg", ""))
+            raise XUIError(f"Ошибка detach client в 3X-UI: {msg}")
 
     @staticmethod
     def parse_inbound_reality_obj(inbound_id: int, obj: dict[str, Any]) -> XUIInboundRealityInfo:
