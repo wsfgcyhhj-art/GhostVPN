@@ -368,7 +368,7 @@ async def sync_xui_traffic_and_enforce_ip_limits(bot: Bot | None = None) -> dict
 
                     sub.online_ips_count = active_ips_count
 
-                    if active_ips_count > sub.limit_ip:
+                    if sub.limit_ip > 0 and active_ips_count > sub.limit_ip:
                         sub.ip_violations_count += 1
                         user = await session.get(User, sub.user_id)
                         if sub.ip_violations_count >= 3:

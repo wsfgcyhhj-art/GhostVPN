@@ -291,9 +291,20 @@
         <option value="RUB_GATEWAY">💳 СБП / Карта РФ (FreeKassa)</option>
         <option value="STARS">⭐️ Telegram Stars</option>
         <option value="CRYPTOBOT">💎 CryptoBot (USDT / TON)</option>
+        <option value="BALANCE">💰 С бонусного баланса</option>
       </select>
     </div>
     <div id="plansContainer">Загрузка тарифов...</div>
+  </div>
+
+  <!-- Подарить подписку другу и Мои подарки -->
+  <div class="card">
+    <div class="card-title">🎁 Подарить подписку другу</div>
+    <p style="font-size:12px;color:var(--text-muted);margin:0 0 10px;">
+      Выбери тариф в подарок — после оплаты ты получишь одноразовую подарочную ссылку в 1 клик!
+    </p>
+    <div id="giftPlansContainer">Загрузка подарков...</div>
+    <div id="myGiftsContainer" style="margin-top:10px;"></div>
   </div>
 
   <!-- Автопродление и Рефералка -->
@@ -304,6 +315,21 @@
     </p>
     <button class="btn btn-neon" onclick="shareWithFriend()">🎁 Подарить 3 дня другу</button>
     <button class="btn btn-dark" onclick="copyRefLink()">🔗 Скопировать реферальную ссылку</button>
+  </div>
+
+  <!-- О сервисе и правовые документы -->
+  <div class="card">
+    <div class="card-title">ℹ️ О сервисе GhostFaceVPN</div>
+    <p style="font-size:12px;color:var(--text-muted);margin:0 0 10px;line-height:1.5;">
+      GhostFaceVPN — сервис стабильного высокоскоростного сетевого подключения, доступный из любой точки мира. Стабильный интернет без ограничений по скорости и трафику.<br/><br/>
+      📅 Дата редакции документов: <b style="color:var(--ghost-white);">16.11.2026</b><br/>
+      💬 Поддержка: <a href="https://t.me/imran_wxz" target="_blank" style="color:var(--neon-red);text-decoration:none;">@imran_wxz</a>
+    </p>
+    <div class="apps-grid" style="grid-template-columns:1fr;gap:6px;">
+      <a class="btn btn-dark" style="text-decoration:none;text-align:center;display:block;" href="/privacy" target="_blank">📄 Политика конфиденциальности (16.11.2026)</a>
+      <a class="btn btn-dark" style="text-decoration:none;text-align:center;display:block;" href="/terms" target="_blank">📜 Пользовательское соглашение (16.11.2026)</a>
+      <a class="btn btn-dark" style="text-decoration:none;text-align:center;display:block;" href="https://t.me/imran_wxz" target="_blank">💬 Поддержка (@imran_wxz)</a>
+    </div>
   </div>
 
   <div class="toast" id="toastMsg">Скопировано!</div>
@@ -380,7 +406,7 @@
       el.style.display = el.style.display === "none" ? "block" : "none";
     }
 
-    async function buyPlan(planId) {
+    async function buyPlan(planId, isGift = false) {
       const provider = document.getElementById("payProvider").value;
       const initData = tg ? tg.initData : "";
       try {
@@ -390,11 +416,16 @@
             "Content-Type": "application/json",
             "X-Telegram-Init-Data": initData
           },
-          body: JSON.stringify({ plan_id: planId, provider: provider })
+          body: JSON.stringify({ plan_id: planId, provider: provider, is_gift: Boolean(isGift) })
         });
         const data = await resp.json();
         if (!resp.ok) {
           showToast(data.detail || "Ошибка создания счёта");
+          return;
+        }
+        if (data.gift) {
+          showToast("🎁 Подарок создан!");
+          loadDashboard();
           return;
         }
         if (data.payment_url) {
@@ -405,6 +436,7 @@
           }
         } else if (data.message) {
           showToast(data.message);
+          loadDashboard();
         }
       } catch (e) {
         showToast("Ошибка соединения с сервером");
@@ -463,6 +495,76 @@
           row.appendChild(buyBtn);
           container.appendChild(row);
         });
+
+        const giftContainer = document.getElementById("giftPlansContainer");
+        if (giftContainer) {
+          giftContainer.textContent = "";
+          (data.plans || []).forEach(p => {
+            const gRow = document.createElement("div");
+            gRow.className = "plan-item";
+
+            const gInfo = document.createElement("div");
+            const gName = document.createElement("div");
+            gName.className = "plan-name";
+            gName.textContent = `🎁 В подарок: ${p.name}`;
+
+            const gMeta = document.createElement("div");
+            gMeta.className = "plan-meta";
+            gMeta.textContent = `${p.days} дней • Ссылка для друга`;
+
+            gInfo.appendChild(gName);
+            gInfo.appendChild(gMeta);
+
+            const gBtn = document.createElement("button");
+            gBtn.className = "plan-buy";
+            gBtn.type = "button";
+            gBtn.textContent = `🎁 ${p.base_price_rub || p.price_rub} ₽`;
+            gBtn.addEventListener("click", () => buyPlan(Number(p.id), true));
+
+            gRow.appendChild(gInfo);
+            gRow.appendChild(gBtn);
+            giftContainer.appendChild(gRow);
+          });
+        }
+
+        const myGiftsEl = document.getElementById("myGiftsContainer");
+        if (myGiftsEl) {
+          myGiftsEl.textContent = "";
+          (data.gifts || []).forEach(g => {
+            const box = document.createElement("div");
+            box.className = "plan-item";
+            box.style.marginTop = "6px";
+
+            const left = document.createElement("div");
+            const title = document.createElement("div");
+            title.className = "plan-name";
+            title.textContent = g.status === "active"
+              ? `🟢 Подарок (${g.days_label})`
+              : `✅ Активирован (${g.days_label})`;
+            const subTxt = document.createElement("div");
+            subTxt.className = "plan-meta";
+            subTxt.textContent = g.deep_link;
+            left.appendChild(title);
+            left.appendChild(subTxt);
+            box.appendChild(left);
+
+            if (g.status === "active" && g.share_url) {
+              const sendBtn = document.createElement("button");
+              sendBtn.className = "plan-buy";
+              sendBtn.type = "button";
+              sendBtn.textContent = "📨 Отправить";
+              sendBtn.addEventListener("click", () => {
+                if (tg && tg.openTelegramLink) {
+                  tg.openTelegramLink(g.share_url);
+                } else {
+                  window.open(g.share_url, "_blank");
+                }
+              });
+              box.appendChild(sendBtn);
+            }
+            myGiftsEl.appendChild(box);
+          });
+        }
       } catch (e) {
         document.getElementById("subStatusText").textContent = "Ошибка загрузки профиля";
       }

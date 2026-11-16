@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import secrets
+import string
 from datetime import timedelta, timezone
 from decimal import Decimal
 from typing import Any, Sequence
@@ -8,6 +10,8 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
+    GiftVoucher,
+    GiftVoucherStatus,
     MediaCache,
     PaymentProviderType,
     Plan,
@@ -22,6 +26,12 @@ from app.db.models import (
     User,
     utcnow,
 )
+
+GIFT_CODE_ALPHABET = string.ascii_lowercase + string.digits
+
+
+def generate_gift_code(length: int = 12) -> str:
+    return "".join(secrets.choice(GIFT_CODE_ALPHABET) for _ in range(length))
 
 
 def detect_lang(language_code: str | None) -> str:
@@ -45,9 +55,27 @@ class Repository:
         full_name: str | None = None,
         referrer_telegram_id: int | None = None,
         language_code: str | None = None,
+        referrer_user_id: int | None = None,
     ) -> tuple[User, bool]:
         res = await self.session.execute(select(User).where(User.telegram_id == telegram_id))
         user = res.scalar_one_or_none()
+        if user is None and username:
+            clean_un = username.lstrip("@").strip()
+            if clean_un:
+                pre_res = await self.session.execute(
+                    select(User).where(
+                        func.lower(User.username) == clean_un.lower(),
+                        User.telegram_id < 0,
+                    )
+                )
+                pre_user = pre_res.scalar_one_or_none()
+                if pre_user is not None:
+                    pre_user.telegram_id = telegram_id
+                    if full_name:
+                        pre_user.full_name = full_name
+                    await self.session.commit()
+                    await self.session.refresh(pre_user)
+                    return pre_user, False
         if user is not None:
             changed = False
             if username and user.username != username:
@@ -61,7 +89,11 @@ class Repository:
             return user, False
 
         referrer_db_id: int | None = None
-        if referrer_telegram_id and referrer_telegram_id != telegram_id:
+        if referrer_user_id:
+            ref_user_by_id = await self.session.get(User, referrer_user_id)
+            if ref_user_by_id and ref_user_by_id.telegram_id != telegram_id:
+                referrer_db_id = ref_user_by_id.id
+        elif referrer_telegram_id and referrer_telegram_id != telegram_id:
             ref_res = await self.session.execute(
                 select(User).where(User.telegram_id == referrer_telegram_id)
             )
@@ -427,3 +459,54 @@ class Repository:
             "rev_crypto_rub_30d": rev_crypto_rub,
             "rev_stars_rub_30d": rev_stars_rub,
         }
+
+    # --- Gift Vouchers ---
+    async def create_gift_voucher(
+        self,
+        *,
+        creator_user_id: int | None,
+        days: int,
+        limit_ip: int = 3,
+        is_admin_gift: bool = False,
+        status: GiftVoucherStatus = GiftVoucherStatus.ACTIVE,
+        code: str | None = None,
+    ) -> GiftVoucher:
+        voucher_code = (code or generate_gift_code(12)).strip()
+        voucher = GiftVoucher(
+            code=voucher_code,
+            creator_user_id=creator_user_id,
+            is_admin_gift=is_admin_gift,
+            days=days,
+            limit_ip=limit_ip,
+            status=status,
+        )
+        self.session.add(voucher)
+        await self.session.commit()
+        await self.session.refresh(voucher)
+        return voucher
+
+    async def get_gift_voucher_by_code(self, code: str) -> GiftVoucher | None:
+        cleaned = code.strip()
+        if cleaned.startswith("gift_"):
+            cleaned = cleaned.replace("gift_", "", 1)
+        res = await self.session.execute(
+            select(GiftVoucher).where(GiftVoucher.code == cleaned)
+        )
+        return res.scalar_one_or_none()
+
+    async def get_user_gift_vouchers(
+        self, user_id: int, limit: int = 20
+    ) -> Sequence[GiftVoucher]:
+        res = await self.session.execute(
+            select(GiftVoucher)
+            .where(
+                GiftVoucher.creator_user_id == user_id,
+                GiftVoucher.status.in_(
+                    [GiftVoucherStatus.ACTIVE, GiftVoucherStatus.REDEEMED]
+                ),
+            )
+            .order_by(GiftVoucher.id.desc())
+            .limit(limit)
+        )
+        return res.scalars().all()
+

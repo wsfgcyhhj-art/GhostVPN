@@ -16,11 +16,14 @@ from pydantic import BaseModel
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.bot.handlers.billing import format_gift_created_message
 from app.bot.handlers.profile import format_subscription_card
 from app.bot.keyboards.user import (
     SHARE_FRIEND_TEXT,
     back_to_menu_kb,
     build_friend_share_url,
+    build_gift_voucher_share_url,
+    gift_created_kb,
     subscription_card_kb,
 )
 from app.bot.loader import bot, dp
@@ -67,6 +70,7 @@ DEEP_LINK_SCHEMES: dict[str, tuple[str, str]] = {
 class WebAppPayRequest(BaseModel):
     plan_id: int
     provider: str = "RUB_GATEWAY"
+    is_gift: bool = False
 
 
 def render_connect_html(app_title: str, deep_link: str, sub_url: str) -> str:
@@ -234,6 +238,141 @@ async def serve_webapp() -> HTMLResponse:
     return HTMLResponse(content=WEBAPP_HTML_PATH.read_text(encoding="utf-8"), status_code=200)
 
 
+@app.get("/privacy", response_class=HTMLResponse)
+async def serve_privacy_policy() -> HTMLResponse:
+    html_doc = """<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Политика конфиденциальности сервиса GhostFaceVPN</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #070709;
+      color: #F4F5F7;
+      margin: 0;
+      padding: 32px 16px;
+      line-height: 1.65;
+    }
+    .doc-card {
+      max-width: 780px;
+      margin: 0 auto;
+      background: #101116;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 16px;
+      padding: 28px 24px;
+    }
+    h1 { font-size: 24px; margin-top: 0; color: #FFFFFF; }
+    h2 { font-size: 18px; margin-top: 22px; color: #FF4D6D; }
+    .meta { color: #9BA1AE; font-size: 14px; margin-bottom: 20px; }
+    a { color: #FF4D6D; text-decoration: none; }
+    ul { padding-left: 20px; }
+  </style>
+</head>
+<body>
+  <div class="doc-card">
+    <h1>Политика конфиденциальности сервиса GhostFaceVPN</h1>
+    <div class="meta"><b>Дата публикации и вступления в силу: 16 ноября 2026 г.</b></div>
+
+    <p>Настоящая Политика конфиденциальности определяет порядок обработки и защиты минимальных технических данных пользователей Telegram-бота <b>@Ghost_Face_VPN_bot</b> (сервис <b>GhostFaceVPN</b>).</p>
+
+    <h2>1. Состав обрабатываемых данных</h2>
+    <p>Для автоматизированного предоставления доступа к цифровому сервису в Telegram-боте @Ghost_Face_VPN_bot обрабатывается только минимально необходимый набор технических данных:</p>
+    <ul>
+      <li>Уникальный числовой идентификатор аккаунта Telegram (Telegram ID);</li>
+      <li>Публичное имя пользователя в Telegram (@username и отображаемое имя профиля, если указаны);</li>
+      <li>Сведения о статусе и сроке действия подписки, выбранном тарифе и количестве подключённых устройств;</li>
+      <li>Технический идентификатор транзакции, сумма и статус оплаты. Сервис <b>не собирает, не хранит и не обрабатывает реквизиты банковских карт</b> — все платёжные операции осуществляются на защищённой стороне лицензированных платёжных агрегаторов.</li>
+    </ul>
+
+    <h2>2. Цели обработки данных</h2>
+    <ul>
+      <li>Автоматическая выдача, учёт и продление параметров сетевого подключения в боте @Ghost_Face_VPN_bot;</li>
+      <li>Отправка системных уведомлений о статусе подписки и оказание технической поддержки пользователям;</li>
+      <li>Исполнение обязательств перед пользователем в рамках Пользовательского соглашения.</li>
+    </ul>
+
+    <h2>3. Хранение и защита информации</h2>
+    <p>Технические данные хранятся на защищённых серверах базы данных с ограниченным доступом. Сервис не передаёт персональные данные третьим лицам, за исключением случаев, предусмотренных применимым законодательством.</p>
+
+    <h2>4. Права пользователя и удаление данных</h2>
+    <p>Пользователь вправе запросить уточнение или удаление своих учётных данных из базы бота, обратившись в службу поддержки сервиса.</p>
+
+    <h2>5. Контакты службы поддержки</h2>
+    <p>По всем вопросам обработки данных и работы сервиса @Ghost_Face_VPN_bot обращайтесь в Telegram: <a href="https://t.me/imran_wxz">@imran_wxz</a> (<a href="https://t.me/imran_wxz">https://t.me/imran_wxz</a>).</p>
+  </div>
+</body>
+</html>"""
+    return HTMLResponse(content=html_doc, status_code=200)
+
+
+@app.get("/terms", response_class=HTMLResponse)
+async def serve_terms_of_service() -> HTMLResponse:
+    html_doc = """<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Пользовательское соглашение сервиса GhostFaceVPN</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #070709;
+      color: #F4F5F7;
+      margin: 0;
+      padding: 32px 16px;
+      line-height: 1.65;
+    }
+    .doc-card {
+      max-width: 780px;
+      margin: 0 auto;
+      background: #101116;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 16px;
+      padding: 28px 24px;
+    }
+    h1 { font-size: 24px; margin-top: 0; color: #FFFFFF; }
+    h2 { font-size: 18px; margin-top: 22px; color: #FF4D6D; }
+    .meta { color: #9BA1AE; font-size: 14px; margin-bottom: 20px; }
+    a { color: #FF4D6D; text-decoration: none; }
+    ul { padding-left: 20px; }
+  </style>
+</head>
+<body>
+  <div class="doc-card">
+    <h1>Пользовательское соглашение сервиса GhostFaceVPN</h1>
+    <div class="meta"><b>Дата публикации и вступления в силу: 16 ноября 2026 г.</b></div>
+
+    <p>Настоящее Пользовательское соглашение регулирует отношения между сервисом <b>GhostFaceVPN</b> (Telegram-бот <b>@Ghost_Face_VPN_bot</b>) и пользователем при оказании цифровых услуг.</p>
+
+    <h2>1. Предмет соглашения</h2>
+    <p>Сервис предоставляет пользователю автоматизированный доступ к цифровым услугам удалённого сетевого подключения по подписке. <b>Услуги обеспечивают стабильный интернет без ограничений по скорости и доступность подключения из любой точки мира.</b></p>
+
+    <h2>2. Порядок оформления и предоставления доступа</h2>
+    <ul>
+      <li>Доступ к цифровым услугам предоставляется мгновенно в автоматическом режиме после подтверждения оплаты выбранного тарифа в Telegram-боте @Ghost_Face_VPN_bot;</li>
+      <li>Стоимость и продолжительность периодов подписки (от 3 дней пробного периода до 365 дней) указаны в разделе тарифов бота и веб-приложения.</li>
+    </ul>
+
+    <h2>3. Правила допустимого использования</h2>
+    <ul>
+      <li>Пользователь обязуется использовать сетевое подключение исключительно в законных целях;</li>
+      <li>Запрещается использование сервиса для рассылки спама, проведения сетевых атак (DDoS, сканирования портов), распространения вредоносного ПО и загрузки торрент-трафика;</li>
+      <li>При нарушении лимита одновременно подключённых устройств или правил допустимого использования доступ может быть временно приостановлен.</li>
+    </ul>
+
+    <h2>4. Условия возврата средств</h2>
+    <p>Если по техническим причинам со стороны сервиса предоставление услуги невозможно и проблема не была устранена службой поддержки в течение 48 часов с момента обращения, пользователю производится возврат средств за неиспользованный период подписки по запросу в службу поддержки.</p>
+
+    <h2>5. Контакты службы поддержки</h2>
+    <p>Служба поддержки пользователей работает ежедневно в Telegram: <a href="https://t.me/imran_wxz">@imran_wxz</a> (<a href="https://t.me/imran_wxz">https://t.me/imran_wxz</a>).</p>
+  </div>
+</body>
+</html>"""
+    return HTMLResponse(content=html_doc, status_code=200)
+
+
 @app.get("/api/webapp/me")
 async def webapp_me(
     x_telegram_init_data: str | None = Header(default=None),
@@ -260,6 +399,7 @@ async def webapp_me(
 
     sub = user.subscription
     plans = await repo.get_active_plans()
+    vouchers = await repo.get_user_gift_vouchers(user.id, limit=20)
     extra_devs = sub.extra_devices if sub else 0
     unified_sub_url = build_subscription_url(sub.sub_id, server=sub.server) if sub else ""
 
@@ -287,8 +427,20 @@ async def webapp_me(
                 "name": p.name,
                 "days": p.days,
                 "price_rub": str(calculate_plan_renewal_price_with_slots(p, extra_devices=extra_devs)),
+                "base_price_rub": str(Decimal(str(p.price_rub)).quantize(Decimal("0.01"))),
             }
             for p in plans
+        ],
+        "gifts": [
+            {
+                "code": v.code,
+                "days": v.days,
+                "days_label": v.days_label,
+                "status": v.status.value,
+                "deep_link": v.deep_link,
+                "share_url": build_gift_voucher_share_url(v.code),
+            }
+            for v in vouchers
         ],
     }
 
@@ -321,13 +473,47 @@ async def webapp_create_payment(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Неподдерживаемый метод оплаты") from exc
 
-    extra_devs = user.subscription.extra_devices if user.subscription else 0
+    extra_devs = 0 if req.is_gift else (user.subscription.extra_devices if user.subscription else 0)
     to_pay_rub = calculate_plan_renewal_price_with_slots(plan, extra_devices=extra_devs)
+    tx_type = TransactionType.GIFT_SUBSCRIPTION if req.is_gift else TransactionType.SUBSCRIPTION
+
+    if provider_enum == PaymentProviderType.BALANCE:
+        if user.balance_rub < to_pay_rub:
+            raise HTTPException(status_code=400, detail="Недостаточно средств на балансе")
+        tx = Transaction(
+            user_id=user.id,
+            plan_id=plan.id,
+            tx_type=tx_type,
+            provider=PaymentProviderType.BALANCE,
+            currency="RUB",
+            amount_currency=to_pay_rub,
+            amount_rub=Decimal("0.00"),
+            balance_used_rub=to_pay_rub,
+            status=TransactionStatus.PENDING,
+        )
+        session.add(tx)
+        await session.commit()
+        await session.refresh(tx)
+        vpn_service = VPNService(session)
+        await vpn_service.process_successful_payment(tx, bot=bot)
+        if req.is_gift and vpn_service.last_gift_voucher:
+            v = vpn_service.last_gift_voucher
+            return {
+                "ok": True,
+                "message": "🎁 Подарочная ссылка создана!",
+                "gift": {
+                    "code": v.code,
+                    "days_label": v.days_label,
+                    "deep_link": v.deep_link,
+                    "share_url": build_gift_voucher_share_url(v.code),
+                },
+            }
+        return {"ok": True, "message": "✅ Подписка успешно оплачена с баланса!"}
 
     tx = Transaction(
         user_id=user.id,
         plan_id=plan.id,
-        tx_type=TransactionType.SUBSCRIPTION,
+        tx_type=tx_type,
         provider=provider_enum,
         currency="XTR" if provider_enum == PaymentProviderType.STARS else "RUB",
         amount_currency=to_pay_rub,
@@ -339,7 +525,11 @@ async def webapp_create_payment(
     await session.commit()
     await session.refresh(tx)
 
-    desc = f"GhostVPN: {plan.name} ({plan.days} дн.)"
+    desc = (
+        f"GhostVPN: Подарок {plan.name} ({plan.days} дн.)"
+        if req.is_gift
+        else f"GhostVPN: {plan.name} ({plan.days} дн.)"
+    )
     if provider_enum == PaymentProviderType.STARS:
         inv = await TelegramStarsProvider().create_invoice(
             transaction_id=tx.id,
@@ -519,7 +709,16 @@ async def cryptobot_webhook(
     user = await session.get(User, tx.user_id)
     if user:
         try:
-            if ok and sub:
+            if ok and tx.tx_type == TransactionType.GIFT_SUBSCRIPTION and vpn_service.last_gift_voucher:
+                v = vpn_service.last_gift_voucher
+                await bot.send_message(
+                    chat_id=user.telegram_id,
+                    text=format_gift_created_message(v),
+                    reply_markup=gift_created_kb(v.code, user.language),
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
+                )
+            elif ok and sub:
                 card = await format_subscription_card(sub, user=user)
                 await bot.send_message(
                     chat_id=user.telegram_id,
@@ -630,7 +829,16 @@ async def rub_gateway_webhook(
     user = await session.get(User, tx.user_id)
     if user:
         try:
-            if ok and sub:
+            if ok and tx.tx_type == TransactionType.GIFT_SUBSCRIPTION and vpn_service.last_gift_voucher:
+                v = vpn_service.last_gift_voucher
+                await bot.send_message(
+                    chat_id=user.telegram_id,
+                    text=format_gift_created_message(v),
+                    reply_markup=gift_created_kb(v.code, user.language),
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
+                )
+            elif ok and sub:
                 card = await format_subscription_card(sub, user=user)
                 await bot.send_message(
                     chat_id=user.telegram_id,

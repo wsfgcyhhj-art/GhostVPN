@@ -1,21 +1,26 @@
 from __future__ import annotations
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
 from aiogram.filters import CommandStart
 from aiogram.filters.command import CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.bot.handlers.profile import format_subscription_card
 from app.bot.keyboards.user import (
+    about_service_kb,
     faq_menu_kb,
     instructions_kb,
     main_menu_kb,
+    subscription_card_kb,
 )
 from app.bot.utils import send_or_edit_banner
 from app.core.config import settings
 from app.core.i18n import t
-from app.db.models import User
+from app.db.models import GiftVoucherStatus, User
 from app.db.repositories import Repository
+from app.services.vpn import VPNService
 
 router = Router(name="start")
 
@@ -44,6 +49,8 @@ def build_welcome_text(user: User) -> str:
 async def cmd_start(
     message: Message,
     command: CommandObject,
+    bot: Bot,
+    session: AsyncSession,
     repo: Repository,
     state: FSMContext,
 ) -> None:
@@ -53,11 +60,25 @@ async def cmd_start(
         return
 
     ref_tg_id: int | None = None
+    ref_user_id: int | None = None
+    gift_code: str | None = None
+
     args = (command.args or "").strip()
     if args.startswith("ref_"):
         raw_id = args.replace("ref_", "", 1)
         if raw_id.isdigit():
             ref_tg_id = int(raw_id)
+    elif args.startswith("gift_"):
+        gift_code = args.replace("gift_", "", 1).strip()
+        if gift_code:
+            voucher_preview = await repo.get_gift_voucher_by_code(gift_code)
+            if (
+                voucher_preview is not None
+                and voucher_preview.status == GiftVoucherStatus.ACTIVE
+                and not voucher_preview.is_admin_gift
+                and voucher_preview.creator_user_id
+            ):
+                ref_user_id = voucher_preview.creator_user_id
 
     user, _ = await repo.get_or_create_user(
         telegram_id=tg_user.id,
@@ -65,8 +86,55 @@ async def cmd_start(
         full_name=tg_user.full_name,
         referrer_telegram_id=ref_tg_id,
         language_code=tg_user.language_code,
+        referrer_user_id=ref_user_id,
     )
     is_admin = tg_user.id in settings.ADMIN_IDS
+
+    if gift_code:
+        vpn_service = VPNService(session)
+        try:
+            redeemed_voucher, sub = await vpn_service.redeem_gift_voucher(
+                user=user,
+                raw_code=gift_code,
+                bot=bot,
+            )
+            card = await format_subscription_card(sub, user=user)
+            await send_or_edit_banner(
+                message,
+                banner_key="profile",
+                caption=(
+                    f"🎁 <b>Подарочная подписка ({redeemed_voucher.days_label}) успешно активирована!</b>\n\n"
+                    f"{card}"
+                ),
+                reply_markup=subscription_card_kb(user, sub),
+                lang=user.language,
+                repo=repo,
+            )
+            return
+        except ValueError as exc:
+            await send_or_edit_banner(
+                message,
+                banner_key="main",
+                caption=f"⚠️ <b>{exc}</b>\n\n{build_welcome_text(user)}",
+                reply_markup=main_menu_kb(user, is_admin=is_admin),
+                lang=user.language,
+                repo=repo,
+            )
+            return
+        except Exception:
+            await send_or_edit_banner(
+                message,
+                banner_key="main",
+                caption=(
+                    "⚠️ <b>Сервер 3X-UI временно обновляется. Нажмите на подарочную ссылку ещё раз через минуту!</b>\n\n"
+                    f"{build_welcome_text(user)}"
+                ),
+                reply_markup=main_menu_kb(user, is_admin=is_admin),
+                lang=user.language,
+                repo=repo,
+            )
+            return
+
     await send_or_edit_banner(
         message,
         banner_key="main",
@@ -174,3 +242,29 @@ async def cb_instructions(
         repo=repo,
     )
     await callback.answer()
+
+
+@router.callback_query(F.data == "help:about")
+async def cb_about_service(
+    callback: CallbackQuery,
+    repo: Repository,
+    db_user: User,
+) -> None:
+    doc_date = settings.DOCS_UPDATED_DATE
+    text = (
+        "ℹ️ <b>О сервисе GhostFaceVPN</b>\n\n"
+        "GhostFaceVPN — сервис стабильного высокоскоростного сетевого подключения, "
+        "доступный из любой точки мира. Стабильный интернет без ограничений по скорости и трафику.\n\n"
+        f"📅 Дата редакции документов: <b>{doc_date}</b>\n"
+        "💬 Поддержка: @imran_wxz"
+    )
+    await send_or_edit_banner(
+        callback,
+        banner_key="support",
+        caption=text,
+        reply_markup=about_service_kb(db_user.language),
+        lang=db_user.language,
+        repo=repo,
+    )
+    await callback.answer()
+

@@ -9,13 +9,18 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from app.core.config import settings
 from app.core.i18n import t
-from app.db.models import Plan, Subscription, User
+from app.db.models import GiftVoucher, GiftVoucherStatus, Plan, Subscription, User
 from app.services.vpn import calculate_plan_renewal_price_with_slots
 
 SHARE_FRIEND_TEXT = (
     "Держи бесплатный доступ к быстрому интернету без рекламы — "
     "работает и на домашней сети, и на мобильной связи, "
     "российские банки открываются без отключения"
+)
+
+GIFT_VOUCHER_SHARE_TEXT = (
+    "🎁 Дарю тебе подписку на быстрый VPN без рекламы! "
+    "Переходи по ссылке и забирай доступ в 1 клик"
 )
 
 
@@ -26,6 +31,19 @@ def build_friend_share_url(user_telegram_id: int) -> str:
     return (
         f"https://t.me/share/url?url={quote(ref_link, safe='')}"
         f"&text={quote(SHARE_FRIEND_TEXT, safe='')}"
+    )
+
+
+def build_gift_voucher_share_url(code: str) -> str:
+    """Формирует ссылку t.me/share/url для отправки подарочной подписки другу в 1 клик."""
+    cleaned = code.strip()
+    if cleaned.startswith("gift_"):
+        cleaned = cleaned.replace("gift_", "", 1)
+    bot_username = (settings.BOT_USERNAME or "GhostVPN_Bot").lstrip("@")
+    gift_link = f"https://t.me/{bot_username}?start=gift_{cleaned}"
+    return (
+        f"https://t.me/share/url?url={quote(gift_link, safe='')}"
+        f"&text={quote(GIFT_VOUCHER_SHARE_TEXT, safe='')}"
     )
 
 
@@ -60,6 +78,12 @@ def main_menu_kb(user: User, is_admin: bool = False) -> InlineKeyboardMarkup:
     )
     b.row(
         InlineKeyboardButton(
+            text=t("btn_gift_sub_friend", lang),
+            callback_data="gift:plans",
+        )
+    )
+    b.row(
+        InlineKeyboardButton(
             text=t("btn_ref", lang, percent=settings.REFERRAL_PERCENT),
             callback_data="profile:ref",
         ),
@@ -69,7 +93,10 @@ def main_menu_kb(user: User, is_admin: bool = False) -> InlineKeyboardMarkup:
         InlineKeyboardButton(text=t("btn_faq", lang), callback_data="help:faq"),
         InlineKeyboardButton(text=t("btn_support", lang), url=settings.SUPPORT_URL),
     )
-    b.row(InlineKeyboardButton(text=t("btn_lang", lang), callback_data="profile:toggle_lang"))
+    b.row(
+        InlineKeyboardButton(text=t("btn_about", lang), callback_data="help:about"),
+        InlineKeyboardButton(text=t("btn_lang", lang), callback_data="profile:toggle_lang"),
+    )
     if is_admin:
         b.row(InlineKeyboardButton(text=t("btn_admin", lang), callback_data="admin:home"))
     return b.as_markup()
@@ -155,6 +182,16 @@ def subscription_card_kb(user: User, sub: Subscription | None) -> InlineKeyboard
                     callback_data="profile:unlock_ip",
                 )
             )
+    b.row(
+        InlineKeyboardButton(
+            text=t("btn_gift_sub_friend", lang),
+            callback_data="gift:plans",
+        ),
+        InlineKeyboardButton(
+            text=t("btn_my_gifts", lang),
+            callback_data="gift:my",
+        ),
+    )
     b.row(
         InlineKeyboardButton(
             text=t("btn_gift_friend", lang),
@@ -252,8 +289,135 @@ def plans_list_kb(
         b.row(InlineKeyboardButton(text=label, callback_data=f"plan:select:{plan.id}"))
     if extra_devices > 0:
         b.row(InlineKeyboardButton(text="🎛 Управлять слотами", callback_data="devices:manage"))
+    b.row(
+        InlineKeyboardButton(
+            text=t("btn_gift_sub_friend", lang),
+            callback_data="gift:plans",
+        )
+    )
     b.row(InlineKeyboardButton(text="🎟 Ввести промокод", callback_data="promo:enter"))
     b.row(InlineKeyboardButton(text=t("btn_back_menu", lang), callback_data="menu:home"))
+    return b.as_markup()
+
+
+def gift_plans_list_kb(
+    plans: Sequence[Plan],
+    discount_percent: int = 0,
+    lang: str = "ru",
+) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    for plan in plans:
+        base_price = Decimal(str(plan.price_rub)).quantize(Decimal("0.01"))
+        if discount_percent > 0:
+            discounted = (base_price * Decimal(100 - discount_percent) / Decimal(100)).quantize(
+                Decimal("0.01")
+            )
+            label = f"🎁 {plan.name} — {discounted} ₽ (-{discount_percent}%)"
+        else:
+            label = f"🎁 {plan.name} — {base_price} ₽ ({plan.days} дн.)"
+        b.row(InlineKeyboardButton(text=label, callback_data=f"gift:select:{plan.id}"))
+    b.row(InlineKeyboardButton(text=t("btn_my_gifts", lang), callback_data="gift:my"))
+    b.row(InlineKeyboardButton(text=t("btn_back_menu", lang), callback_data="menu:home"))
+    return b.as_markup()
+
+
+def gift_payment_methods_kb(
+    plan_id: int,
+    final_price_rub: Decimal,
+    user_balance_rub: Decimal,
+    use_balance: bool = False,
+) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+
+    if user_balance_rub > Decimal("0.00"):
+        if user_balance_rub >= final_price_rub:
+            b.row(
+                InlineKeyboardButton(
+                    text=f"💰 Оплатить полностью с баланса ({final_price_rub} ₽)",
+                    callback_data=f"gift:pay_balance_full:{plan_id}",
+                )
+            )
+        else:
+            toggle_text = (
+                f"✅ Списать баланс ({user_balance_rub} ₽) как скидку"
+                if use_balance
+                else f"☑️ Использовать баланс ({user_balance_rub} ₽) как скидку"
+            )
+            b.row(
+                InlineKeyboardButton(
+                    text=toggle_text,
+                    callback_data=f"gift:select:{plan_id}:{'0' if use_balance else '1'}",
+                )
+            )
+
+    flag = "1" if use_balance else "0"
+    b.row(
+        InlineKeyboardButton(
+            text="💳 СБП / Карта РФ (Мгновенно)",
+            callback_data=f"gift:pay_create:RUB_GATEWAY:{plan_id}:{flag}",
+        )
+    )
+    b.row(
+        InlineKeyboardButton(
+            text="⭐️ Telegram Stars",
+            callback_data=f"gift:pay_create:STARS:{plan_id}:{flag}",
+        )
+    )
+    b.row(
+        InlineKeyboardButton(
+            text="💎 CryptoBot (USDT / TON / BTC)",
+            callback_data=f"gift:pay_create:CRYPTOBOT:{plan_id}:{flag}",
+        )
+    )
+    b.row(InlineKeyboardButton(text="⬅️ К выбору подарка", callback_data="gift:plans"))
+    return b.as_markup()
+
+
+def gift_created_kb(code: str, lang: str = "ru") -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(
+        InlineKeyboardButton(
+            text="📨 Отправить подарок другу",
+            url=build_gift_voucher_share_url(code),
+        )
+    )
+    b.row(
+        InlineKeyboardButton(
+            text="✨ Активировать на свой аккаунт",
+            callback_data=f"gift:redeem_self:{code}",
+        )
+    )
+    b.row(
+        InlineKeyboardButton(text=t("btn_my_gifts", lang), callback_data="gift:my"),
+        InlineKeyboardButton(text=t("btn_back_menu", lang), callback_data="menu:home"),
+    )
+    return b.as_markup()
+
+
+def my_gifts_kb(vouchers: Sequence[GiftVoucher], lang: str = "ru") -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    for v in vouchers:
+        if v.status == GiftVoucherStatus.ACTIVE:
+            b.row(
+                InlineKeyboardButton(
+                    text=f"📨 Отправить ({v.days_label})",
+                    url=build_gift_voucher_share_url(v.code),
+                ),
+                InlineKeyboardButton(
+                    text=f"✨ Себе ({v.code[:6]})",
+                    callback_data=f"gift:redeem_self:{v.code}",
+                ),
+            )
+    b.row(
+        InlineKeyboardButton(
+            text="🎁 Купить подарок другу",
+            callback_data="gift:plans",
+        )
+    )
+    b.row(
+        InlineKeyboardButton(text="🔑 К подписке", callback_data="profile:sub"),
+        InlineKeyboardButton(text=t("btn_back_menu", lang), callback_data="menu:home"),
+    )
     return b.as_markup()
 
 
@@ -389,6 +553,41 @@ def referral_kb(user: User) -> InlineKeyboardMarkup:
         InlineKeyboardButton(
             text=t("btn_gift_friend", lang),
             url=build_friend_share_url(user.telegram_id),
+        )
+    )
+    b.row(
+        InlineKeyboardButton(
+            text=t("btn_gift_sub_friend", lang),
+            callback_data="gift:plans",
+        ),
+        InlineKeyboardButton(
+            text=t("btn_my_gifts", lang),
+            callback_data="gift:my",
+        ),
+    )
+    b.row(InlineKeyboardButton(text=t("btn_back_menu", lang), callback_data="menu:home"))
+    return b.as_markup()
+
+
+def about_service_kb(lang: str = "ru") -> InlineKeyboardMarkup:
+    doc_date = settings.DOCS_UPDATED_DATE
+    b = InlineKeyboardBuilder()
+    b.row(
+        InlineKeyboardButton(
+            text=f"📄 Политика конфиденциальности ({doc_date})",
+            url=settings.PRIVACY_URL,
+        )
+    )
+    b.row(
+        InlineKeyboardButton(
+            text=f"📜 Пользовательское соглашение ({doc_date})",
+            url=settings.TERMS_URL,
+        )
+    )
+    b.row(
+        InlineKeyboardButton(
+            text="💬 Поддержка (@imran_wxz)",
+            url=settings.SUPPORT_URL,
         )
     )
     b.row(InlineKeyboardButton(text=t("btn_back_menu", lang), callback_data="menu:home"))

@@ -31,3 +31,10 @@ class AdminBroadcastState(StatesGroup):
     waiting_for_content = State()
     waiting_for_button = State()
     waiting_for_confirm = State()
+
+
+class AdminGiftState(StatesGroup):
+    waiting_for_recipient = State()
+    waiting_for_direct_custom_days = State()
+    waiting_for_link_custom_days = State()
+

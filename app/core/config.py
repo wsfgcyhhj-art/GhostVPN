@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import List
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,8 +19,10 @@ class Settings(BaseSettings):
     BOT_USERNAME: str = Field(default="GhostVPN_Bot")
     WEBHOOK_BASE_URL: str = Field(default="https://ghostvpn.onrender.com")
     WEBHOOK_SECRET: str = Field(default="super_secret_telegram_webhook_token")
-    SUPPORT_URL: str = Field(default="https://t.me/ghostvpn_support")
-    TERMS_URL: str = Field(default="https://telegra.ph/Terms-of-Service-GhostVPN-01-01")
+    SUPPORT_URL: str = Field(default="https://t.me/imran_wxz")
+    DOCS_UPDATED_DATE: str = Field(default="16.11.2026")
+    PRIVACY_URL: str = Field(default="")
+    TERMS_URL: str = Field(default="")
 
     # --- Admins & Alerts ---
     ADMIN_IDS: List[int] = Field(default_factory=list)
@@ -125,6 +127,15 @@ class Settings(BaseSettings):
         if v.startswith("postgresql://") and "+asyncpg" not in v:
             return v.replace("postgresql://", "postgresql+asyncpg://", 1)
         return v
+
+    @model_validator(mode="after")
+    def ensure_legal_doc_urls(self) -> "Settings":
+        base = (self.WEBHOOK_BASE_URL or "https://ghostvpn.onrender.com").strip().rstrip("/")
+        if not self.PRIVACY_URL or "telegra.ph" in self.PRIVACY_URL:
+            self.PRIVACY_URL = f"{base}/privacy"
+        if not self.TERMS_URL or "telegra.ph" in self.TERMS_URL:
+            self.TERMS_URL = f"{base}/terms"
+        return self
 
 
 @lru_cache

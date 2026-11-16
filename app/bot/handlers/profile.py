@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,6 +11,7 @@ from app.bot.keyboards.user import (
     main_menu_kb,
     manage_slots_kb,
     mobile_boost_kb,
+    my_gifts_kb,
     referral_kb,
     reissue_confirm_kb,
     subscription_card_kb,
@@ -19,7 +20,7 @@ from app.bot.states import UserPromoState
 from app.bot.utils import format_dt_msk, send_or_edit_banner
 from app.core.config import settings
 from app.core.i18n import render_progress_bar, t
-from app.db.models import PromoType, Subscription, User
+from app.db.models import GiftVoucherStatus, PromoType, Subscription, User
 from app.db.repositories import Repository
 from app.services.qr_card import generate_branded_qr_card
 from app.services.vpn import VPNService, build_subscription_url, calculate_extra_device_price
@@ -62,18 +63,37 @@ async def format_subscription_card(
             await client.close()
 
     used_gb = sub.used_traffic_gb
-    online_devs = min(sub.online_ips_count or 0, sub.limit_ip)
+    online_devs = (
+        (sub.online_ips_count or 0)
+        if sub.limit_ip == 0
+        else min(sub.online_ips_count or 0, sub.limit_ip)
+    )
     balance_str = f"{user.balance_rub} ₽" if user else "0.00 ₽"
     auto_str = "Включено ✅" if (user and user.auto_renew) else "Выключено ❌"
-    extra_note = f" (база {settings.DEFAULT_LIMIT_IP} + доп. {sub.extra_devices})" if sub.extra_devices > 0 else ""
+    if sub.limit_ip == 0:
+        devs_value = f"<b>{online_devs} / ♾ (Безлимит)</b>"
+    else:
+        extra_note = (
+            f" (база {settings.DEFAULT_LIMIT_IP} + доп. {sub.extra_devices})"
+            if sub.extra_devices > 0
+            else ""
+        )
+        devs_value = f"<b>{online_devs} / {sub.limit_ip}</b>{extra_note}"
+
+    if days_left >= 18250:
+        remain_line = "• <b>Остаток срока:</b> <b>♾ Безлимит навсегда</b>\n"
+        exp_line = "• <b>Действует до:</b> <b>♾ Безлимит навсегда</b>\n"
+    else:
+        remain_line = f"• <b>Остаток срока:</b> <code>{prog_bar}</code> <b>{days_left} из {total_days} дн.</b>\n"
+        exp_line = f"• <b>Действует до:</b> <b>{exp_str}</b>\n"
 
     return (
         f"👻 <b>Личный кабинет GhostVPN</b>\n\n"
         f"• <b>Статус защиты:</b> {status} ({sub_type})\n"
-        f"• <b>Остаток срока:</b> <code>{prog_bar}</code> <b>{days_left} из {total_days} дн.</b>\n"
-        f"• <b>Действует до:</b> <b>{exp_str}</b>\n"
+        f"{remain_line}"
+        f"{exp_line}"
         f"• <b>Использовано трафика:</b> <b>{used_gb} ГБ</b> из ∞ (Безлимит)\n"
-        f"• <b>Подключено устройств:</b> <b>{online_devs} / {sub.limit_ip}</b>{extra_note}\n"
+        f"• <b>Подключено устройств:</b> {devs_value}\n"
         f"• <b>Сервер {sub.server.name}:</b> <b>{server_status_line}</b>\n"
         f"• <b>Внутренний баланс:</b> <b>{balance_str}</b> | Автопродление: <b>{auto_str}</b>\n\n"
         f"📋 <b>Твоя единая ссылка подписки (Wi-Fi + LTE, нажми для копирования):</b>\n"
@@ -499,3 +519,86 @@ async def msg_promo_redeem(
         lang=db_user.language,
         repo=repo,
     )
+
+
+@router.callback_query(F.data == "gift:my")
+async def cb_my_gifts(
+    callback: CallbackQuery,
+    repo: Repository,
+    db_user: User,
+) -> None:
+    vouchers = await repo.get_user_gift_vouchers(db_user.id, limit=20)
+    if not vouchers:
+        text = (
+            "🎁 <b>Мои подарки</b>\n\n"
+            "У тебя пока нет купленных подарочных подписок.\n"
+            "Ты можешь подарить другу подписку на 1, 3, 6 или 12 месяцев — "
+            "после оплаты бот сразу выдаст красивую ссылку-подарок в 1 клик!"
+        )
+    else:
+        lines = ["🎁 <b>Мои подарки (купленные сертификаты)</b>\n"]
+        for v in vouchers:
+            if v.status == GiftVoucherStatus.ACTIVE:
+                lines.append(
+                    f"🟢 <b>Готов к отправке ({v.days_label}, {v.limit_ip_label})</b>\n"
+                    f"🔗 <code>{v.deep_link}</code>\n"
+                )
+            else:
+                red_dt = format_dt_msk(v.redeemed_at) if v.redeemed_at else "—"
+                lines.append(
+                    f"✅ <b>Активирован ({v.days_label})</b> — код <code>{v.code}</code> ({red_dt})\n"
+                )
+        lines.append(
+            "\n<i>💡 Неиспользованный подарок можно отправить другу кнопкой ниже "
+            "или активировать на свой собственный аккаунт!</i>"
+        )
+        text = "\n".join(lines)
+
+    await send_or_edit_banner(
+        callback,
+        banner_key="referral",
+        caption=text,
+        reply_markup=my_gifts_kb(vouchers, db_user.language),
+        lang=db_user.language,
+        repo=repo,
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("gift:redeem_self:"))
+async def cb_gift_redeem_self(
+    callback: CallbackQuery,
+    bot: Bot,
+    session: AsyncSession,
+    repo: Repository,
+    db_user: User,
+) -> None:
+    code = (callback.data or "").split(":", 2)[2]
+    vpn_service = VPNService(session)
+    try:
+        voucher, sub = await vpn_service.redeem_gift_voucher(
+            user=db_user,
+            raw_code=code,
+            bot=bot,
+        )
+    except ValueError as exc:
+        await callback.answer(str(exc), show_alert=True)
+        return
+    except Exception as exc:
+        await callback.answer(f"Ошибка активации подарка: {exc}", show_alert=True)
+        return
+
+    card = await format_subscription_card(sub, user=db_user)
+    await send_or_edit_banner(
+        callback,
+        banner_key="profile",
+        caption=(
+            f"🎉 <b>Подарочный сертификат ({voucher.days_label}) успешно активирован на твой аккаунт!</b>\n\n"
+            f"{card}"
+        ),
+        reply_markup=subscription_card_kb(db_user, sub),
+        lang=db_user.language,
+        repo=repo,
+    )
+    await callback.answer("Подарок активирован!")
+

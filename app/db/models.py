@@ -52,6 +52,14 @@ class TransactionType(str, enum.Enum):
     EXTRA_DEVICE = "EXTRA_DEVICE"
     AUTO_RENEW = "AUTO_RENEW"
     TOPUP = "TOPUP"
+    GIFT_SUBSCRIPTION = "GIFT_SUBSCRIPTION"
+
+
+class GiftVoucherStatus(str, enum.Enum):
+    PENDING_PAYMENT = "pending_payment"
+    ACTIVE = "active"
+    REDEEMED = "redeemed"
+    CANCELLED = "cancelled"
 
 
 class User(Base):
@@ -305,4 +313,67 @@ class MediaCache(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
     )
+
+
+class GiftVoucher(Base):
+    __tablename__ = "gift_vouchers"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    code: Mapped[str] = mapped_column(String(32), unique=True, index=True, nullable=False)
+    creator_user_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), index=True, nullable=True
+    )
+    is_admin_gift: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    days: Mapped[int] = mapped_column(Integer, nullable=False)
+    limit_ip: Mapped[int] = mapped_column(
+        Integer, default=settings.DEFAULT_LIMIT_IP, nullable=False
+    )
+    status: Mapped[GiftVoucherStatus] = mapped_column(
+        Enum(
+            GiftVoucherStatus,
+            native_enum=False,
+            values_callable=lambda enum_cls: [e.value for e in enum_cls],
+        ),
+        default=GiftVoucherStatus.ACTIVE,
+        index=True,
+        nullable=False,
+    )
+    redeemed_by_user_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    redeemed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+    creator_user: Mapped[Optional["User"]] = relationship(
+        "User", foreign_keys=[creator_user_id], lazy="selectin"
+    )
+    redeemed_by_user: Mapped[Optional["User"]] = relationship(
+        "User", foreign_keys=[redeemed_by_user_id], lazy="selectin"
+    )
+
+    @property
+    def is_unlimited_days(self) -> bool:
+        return self.days == 0 or self.days >= 18250
+
+    @property
+    def effective_days(self) -> int:
+        return 36500 if self.is_unlimited_days else self.days
+
+    @property
+    def days_label(self) -> str:
+        return "♾ Безлимит навсегда" if self.is_unlimited_days else f"{self.days} дн."
+
+    @property
+    def limit_ip_label(self) -> str:
+        return "♾ Безлимит устройств" if self.limit_ip == 0 else f"{self.limit_ip} устр."
+
+    @property
+    def deep_link(self) -> str:
+        bot_username = (settings.BOT_USERNAME or "GhostVPN_Bot").lstrip("@")
+        return f"https://t.me/{bot_username}?start=gift_{self.code}"
+
 

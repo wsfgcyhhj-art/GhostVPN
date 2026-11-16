@@ -578,3 +578,148 @@ async def test_dual_reality_inbounds_sync_and_mobile_multiprofile_formats(
         object.__setattr__(settings, "XUI_MOBILE_INBOUND_ID", old_mob_id)
         object.__setattr__(settings, "XUI_EXTRA_INBOUND_IDS", old_extra_ids)
         app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_gift_subscriptions_admin_and_user_flows(
+    db_session: AsyncSession,
+) -> None:
+    from urllib.parse import unquote
+
+    from app.bot.handlers.admin import _execute_admin_direct_gift
+    from app.bot.keyboards.user import GIFT_VOUCHER_SHARE_TEXT, build_gift_voucher_share_url
+    from app.db.models import GiftVoucherStatus
+
+    repo = Repository(db_session)
+    mock_xui = AsyncMock(spec=XUIClient)
+    vpn = VPNService(db_session, xui_client_override=mock_xui)
+    mock_bot = AsyncMock()
+
+    # 1. Прямой безлимитный подарок от админа (days=0 -> >=18250, limit_ip=0) новому пользователю
+    admin_user, _ = await repo.get_or_create_user(telegram_id=900001, username="boss_admin")
+    unregistered_user, _ = await repo.get_or_create_user(telegram_id=900002, username="lucky_target")
+    with patch("app.bot.handlers.admin.VPNService", return_value=vpn):
+        target_u, admin_sub, notified = await _execute_admin_direct_gift(
+            bot=mock_bot,
+            session=db_session,
+            repo=repo,
+            admin_tg_id=admin_user.telegram_id,
+            target_user_id=unregistered_user.id,
+            days=0,
+            limit_ip=0,
+        )
+    assert notified is True
+    assert admin_sub.limit_ip == 0
+    assert admin_sub.days_left >= 18250
+    assert mock_xui.add_client.await_args_list[-1].kwargs["limit_ip"] == 0
+
+    # 2. Одноразовая ссылка от админа (90 дней, безлимит устройств = 0)
+    admin_link_voucher = await repo.create_gift_voucher(
+        creator_user_id=admin_user.id,
+        days=90,
+        limit_ip=0,
+        is_admin_gift=True,
+        status=GiftVoucherStatus.ACTIVE,
+    )
+    assert admin_link_voucher.status == GiftVoucherStatus.ACTIVE
+    assert admin_link_voucher.deep_link.endswith(f"?start=gift_{admin_link_voucher.code}")
+
+    # 3. Покупка подарочной подписки обычным пользователем + реферальные 15% его пригласившему
+    inviter, _ = await repo.get_or_create_user(telegram_id=900010, username="inviter_pro")
+    buyer, _ = await repo.get_or_create_user(
+        telegram_id=900011,
+        username="generous_buyer",
+        referrer_telegram_id=inviter.telegram_id,
+    )
+    plans = await repo.get_active_plans()
+    gift_plan = plans[0]  # 1 месяц (179 ₽, 30 дней)
+
+    await repo.create_gift_voucher(
+        creator_user_id=buyer.id,
+        days=gift_plan.days,
+        limit_ip=gift_plan.limit_ip,
+        is_admin_gift=False,
+        status=GiftVoucherStatus.PENDING_PAYMENT,
+    )
+    tx_gift = Transaction(
+        user_id=buyer.id,
+        plan_id=gift_plan.id,
+        tx_type=TransactionType.GIFT_SUBSCRIPTION,
+        provider=PaymentProviderType.RUB_GATEWAY,
+        currency="RUB",
+        amount_currency=gift_plan.price_rub,
+        amount_rub=gift_plan.price_rub,
+        balance_used_rub=Decimal("0.00"),
+        status=TransactionStatus.PENDING,
+    )
+    db_session.add(tx_gift)
+    await db_session.commit()
+    await db_session.refresh(tx_gift)
+
+    ok, _ = await vpn.process_successful_payment(tx_gift, bot=mock_bot)
+    assert ok is True
+    user_voucher = vpn.last_gift_voucher
+    assert user_voucher is not None
+    assert user_voucher.status == GiftVoucherStatus.ACTIVE
+    assert user_voucher.days == gift_plan.days
+    assert user_voucher.is_admin_gift is False
+
+    # Проверяем, что рефереру покупателя начислено 15% за покупку подарка
+    await db_session.refresh(inviter)
+    expected_ref_bonus = (
+        Decimal(str(gift_plan.price_rub)) * Decimal(settings.REFERRAL_PERCENT) / Decimal(100)
+    ).quantize(Decimal("0.01"))
+    assert inviter.balance_rub == expected_ref_bonus
+
+    # Проверяем ссылку пересылки подарка другу
+    gift_share = build_gift_voucher_share_url(user_voucher.code)
+    assert gift_share.startswith("https://t.me/share/url?url=")
+    assert unquote(gift_share).endswith(GIFT_VOUCHER_SHARE_TEXT)
+
+    # 4. Активация пользовательского подарка новым другом:
+    # привязка реферала (referrer_id = buyer.id), создание подписки в 3X-UI и уведомление дарителю
+    mock_bot.send_message.reset_mock()
+    friend_user, is_new = await repo.get_or_create_user(
+        telegram_id=900012,
+        username="new_friend",
+        referrer_user_id=user_voucher.creator_user_id,
+    )
+    assert is_new is True
+    assert friend_user.referrer_id == buyer.id
+
+    redeemed_v, friend_sub = await vpn.redeem_gift_voucher(
+        user=friend_user,
+        raw_code=f"gift_{user_voucher.code}",
+        bot=mock_bot,
+    )
+    assert redeemed_v.status == GiftVoucherStatus.REDEEMED
+    assert redeemed_v.redeemed_by_user_id == friend_user.id
+    assert redeemed_v.redeemed_at is not None
+    assert friend_sub.is_currently_valid is True
+    assert 29 <= friend_sub.days_left <= 31
+    orig_uuid = friend_sub.xui_client_uuid
+    orig_sub_id = friend_sub.sub_id
+
+    # Дарителю ушло уведомление об активации подарка
+    assert any(
+        c.kwargs.get("chat_id") == buyer.telegram_id
+        and "Ваш друг активировал подаренную подписку" in c.kwargs.get("text", "")
+        for c in mock_bot.send_message.await_args_list
+    )
+
+    # Повторная активация того же кода отклоняется
+    with pytest.raises(ValueError, match="уже был активирован"):
+        await vpn.redeem_gift_voucher(user=friend_user, raw_code=user_voucher.code)
+
+    # 5. Активация второго подарка (от админа на 90 дней, 0 = безлимит устр.) тем же пользователем:
+    # дни прибавляются к текущему expires_at, старая ссылка и UUID сохраняются!
+    _, extended_sub = await vpn.redeem_gift_voucher(
+        user=friend_user,
+        raw_code=admin_link_voucher.code,
+        bot=mock_bot,
+    )
+    assert extended_sub.xui_client_uuid == orig_uuid
+    assert extended_sub.sub_id == orig_sub_id
+    assert extended_sub.limit_ip == 0
+    assert 119 <= extended_sub.days_left <= 122
+

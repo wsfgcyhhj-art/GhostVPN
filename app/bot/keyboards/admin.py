@@ -5,6 +5,7 @@ from typing import Sequence
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+from app.bot.keyboards.user import build_gift_voucher_share_url
 from app.db.models import Plan, PromoCode, User
 
 
@@ -19,9 +20,10 @@ def admin_home_kb() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="🎟 Промокоды", callback_data="admin:promos"),
     )
     b.row(
+        InlineKeyboardButton(text="🎁 Подарить подписку", callback_data="admin:gift_menu"),
         InlineKeyboardButton(
             text="🎁 Начислить дни всем активным", callback_data="admin:mass_compensate"
-        )
+        ),
     )
     b.row(
         InlineKeyboardButton(text="📢 Конструктор рассылок", callback_data="admin:broadcast"),
@@ -128,3 +130,115 @@ def admin_broadcast_confirm_kb() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="❌ Отмена", callback_data="admin:home"),
     )
     return b.as_markup()
+
+
+def admin_gift_menu_kb() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(
+        InlineKeyboardButton(
+            text="🎯 Выдать напрямую (@username / ID / переслать)",
+            callback_data="admin:gift_direct",
+        )
+    )
+    b.row(
+        InlineKeyboardButton(
+            text="🔗 Создать подарочную ссылку",
+            callback_data="admin:gift_link",
+        )
+    )
+    b.row(InlineKeyboardButton(text="⬅️ В админ-панель", callback_data="admin:home"))
+    return b.as_markup()
+
+
+def admin_gift_direct_days_kb() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(
+        InlineKeyboardButton(text="7 дн.", callback_data="admin:gift_dir_days:7:3"),
+        InlineKeyboardButton(text="30 дн.", callback_data="admin:gift_dir_days:30:3"),
+        InlineKeyboardButton(text="90 дн.", callback_data="admin:gift_dir_days:90:3"),
+    )
+    b.row(
+        InlineKeyboardButton(text="180 дн.", callback_data="admin:gift_dir_days:180:3"),
+        InlineKeyboardButton(text="365 дн.", callback_data="admin:gift_dir_days:365:3"),
+    )
+    b.row(
+        InlineKeyboardButton(
+            text="♾ Безлимит навсегда (0 устройств лимит)",
+            callback_data="admin:gift_dir_days:0:0",
+        )
+    )
+    b.row(
+        InlineKeyboardButton(
+            text="✏️ Ввести своё число дней",
+            callback_data="admin:gift_dir_custom",
+        )
+    )
+    b.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="admin:gift_menu"))
+    return b.as_markup()
+
+
+def admin_gift_link_days_kb() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(
+        InlineKeyboardButton(text="7 дн.", callback_data="admin:gift_lnk_days:7"),
+        InlineKeyboardButton(text="30 дн.", callback_data="admin:gift_lnk_days:30"),
+        InlineKeyboardButton(text="90 дн.", callback_data="admin:gift_lnk_days:90"),
+    )
+    b.row(
+        InlineKeyboardButton(text="180 дн.", callback_data="admin:gift_lnk_days:180"),
+        InlineKeyboardButton(text="365 дн.", callback_data="admin:gift_lnk_days:365"),
+    )
+    b.row(
+        InlineKeyboardButton(
+            text="♾ Безлимит навсегда (0 устр.)",
+            callback_data="admin:gift_lnk_make:0:0",
+        )
+    )
+    b.row(
+        InlineKeyboardButton(
+            text="♾ Безлимит навсегда (выбрать лимит устр.)",
+            callback_data="admin:gift_lnk_days:0",
+        )
+    )
+    b.row(
+        InlineKeyboardButton(
+            text="✏️ Своё число дней",
+            callback_data="admin:gift_lnk_custom",
+        )
+    )
+    b.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="admin:gift_menu"))
+    return b.as_markup()
+
+
+def admin_gift_link_limit_kb(days: int) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(
+        InlineKeyboardButton(
+            text="📱 3 устройства (стандарт)",
+            callback_data=f"admin:gift_lnk_make:{days}:3",
+        )
+    )
+    b.row(
+        InlineKeyboardButton(
+            text="♾ Безлимит устройств (0)",
+            callback_data=f"admin:gift_lnk_make:{days}:0",
+        )
+    )
+    b.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="admin:gift_link"))
+    return b.as_markup()
+
+
+def admin_gift_link_created_kb(code: str) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(
+        InlineKeyboardButton(
+            text="📨 Переслать подарок",
+            url=build_gift_voucher_share_url(code),
+        )
+    )
+    b.row(
+        InlineKeyboardButton(text="➕ Ещё подарок", callback_data="admin:gift_menu"),
+        InlineKeyboardButton(text="⬅️ В админ-панель", callback_data="admin:home"),
+    )
+    return b.as_markup()
+

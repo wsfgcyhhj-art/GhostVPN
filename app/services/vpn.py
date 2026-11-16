@@ -15,6 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.logging import logger, send_admin_alert
 from app.db.models import (
+    GiftVoucher,
+    GiftVoucherStatus,
     Plan,
     Server,
     Subscription,
@@ -497,6 +499,7 @@ class VPNService:
     ) -> None:
         self.session = session
         self._xui_override = xui_client_override
+        self.last_gift_voucher: GiftVoucher | None = None
 
     async def _get_server(self) -> Server:
         res = await self.session.execute(
@@ -802,7 +805,8 @@ class VPNService:
         или обновляет существующего при продлении, сохраняя его `subId` и `uuid`.
         """
         now = utcnow()
-        eff_limit_ip = limit_ip or settings.DEFAULT_LIMIT_IP
+        eff_days = 36500 if (days == 0 or days >= 18250) else days
+        eff_limit_ip = settings.DEFAULT_LIMIT_IP if limit_ip is None else limit_ip
 
         res = await self.session.execute(
             select(Subscription).where(Subscription.user_id == user.id)
@@ -814,7 +818,7 @@ class VPNService:
             new_uuid = str(uuid.uuid4())
             new_sub_id = generate_sub_id(16)
             email = f"tg_{user.telegram_id}"
-            new_expires_at = calculate_new_expiry(None, days, now=now)
+            new_expires_at = calculate_new_expiry(None, eff_days, now=now)
             expiry_ms = datetime_to_ms(new_expires_at)
 
             client = self._make_xui_client(server)
@@ -866,10 +870,13 @@ class VPNService:
         # Продление существующей подписки (сохраняем старый subId и uuid!)
         server = sub.server or await self._get_server()
         was_expired = not sub.is_currently_valid
-        new_expires_at = calculate_new_expiry(sub.expires_at, days, now=now)
+        new_expires_at = calculate_new_expiry(sub.expires_at, eff_days, now=now)
         is_still_active = new_expires_at > now
         expiry_ms = datetime_to_ms(new_expires_at)
-        total_limit_ip = max(eff_limit_ip + sub.extra_devices, sub.limit_ip)
+        if eff_limit_ip == 0 or sub.limit_ip == 0:
+            total_limit_ip = 0
+        else:
+            total_limit_ip = max(eff_limit_ip + sub.extra_devices, sub.limit_ip)
 
         client = self._make_xui_client(server)
         try:
@@ -1203,6 +1210,38 @@ class VPNService:
             )
 
         try:
+            if tx.tx_type == TransactionType.GIFT_SUBSCRIPTION:
+                if plan is None:
+                    raise RuntimeError(f"Подарочная транзакция #{tx.id} не содержит тарифа")
+                pending_voucher_res = await self.session.execute(
+                    select(GiftVoucher)
+                    .where(
+                        GiftVoucher.creator_user_id == user.id,
+                        GiftVoucher.days == plan.days,
+                        GiftVoucher.status == GiftVoucherStatus.PENDING_PAYMENT,
+                    )
+                    .order_by(GiftVoucher.id.desc())
+                    .limit(1)
+                    .with_for_update()
+                )
+                voucher = pending_voucher_res.scalar_one_or_none()
+                if voucher is not None:
+                    voucher.status = GiftVoucherStatus.ACTIVE
+                else:
+                    voucher = GiftVoucher(
+                        code=generate_sub_id(12),
+                        creator_user_id=user.id,
+                        is_admin_gift=False,
+                        days=plan.days,
+                        limit_ip=plan.limit_ip,
+                        status=GiftVoucherStatus.ACTIVE,
+                    )
+                    self.session.add(voucher)
+                tx.status = TransactionStatus.COMPLETED
+                await self.session.commit()
+                await self.session.refresh(voucher)
+                self.last_gift_voucher = voucher
+                return True, user.subscription
             if tx.tx_type == TransactionType.EXTRA_DEVICE:
                 sub = await self.add_extra_device_slot(
                     user=user, slots=max(1, tx.extra_devices_qty or 1)
@@ -1244,3 +1283,78 @@ class VPNService:
                 critical=True,
             )
             return False, None
+
+    async def redeem_gift_voucher(
+        self,
+        user: User,
+        raw_code: str,
+        bot: "Bot | None" = None,
+    ) -> tuple[GiftVoucher, Subscription]:
+        """
+        Активирует подарочный ваучер (`gift_{code}`) для указанного пользователя (нового или существующего).
+        Если у получателя уже есть активная подписка — дни прибавляются к текущему `expires_at`,
+        сохраняя прежнюю ссылку подписки. Если подписки не было — создаётся клиент в 3X-UI.
+        """
+        cleaned = raw_code.strip()
+        if cleaned.startswith("gift_"):
+            cleaned = cleaned.replace("gift_", "", 1)
+
+        res = await self.session.execute(
+            select(GiftVoucher).where(GiftVoucher.code == cleaned).with_for_update()
+        )
+        voucher = res.scalar_one_or_none()
+        if voucher is None or voucher.status != GiftVoucherStatus.ACTIVE:
+            raise ValueError(
+                "Этот подарочный сертификат уже был активирован ранее или не существует."
+            )
+
+        if (
+            not voucher.is_admin_gift
+            and voucher.creator_user_id
+            and voucher.creator_user_id != user.id
+            and user.referrer_id is None
+        ):
+            user.referrer_id = voucher.creator_user_id
+
+        sub = await self.grant_or_extend_subscription(
+            user=user,
+            days=voucher.effective_days,
+            limit_ip=voucher.limit_ip,
+            is_trial=False,
+        )
+
+        voucher.status = GiftVoucherStatus.REDEEMED
+        voucher.redeemed_by_user_id = user.id
+        voucher.redeemed_at = utcnow()
+        await self.session.commit()
+        await self.session.refresh(voucher)
+        await self.session.refresh(sub)
+
+        if bot and voucher.creator_user_id and voucher.creator_user_id != user.id:
+            creator = await self.session.get(User, voucher.creator_user_id)
+            if creator is not None:
+                try:
+                    friend_name = (
+                        f"@{user.username}"
+                        if user.username
+                        else (user.full_name or f"ID {user.telegram_id}")
+                    )
+                    await bot.send_message(
+                        chat_id=creator.telegram_id,
+                        text=(
+                            f"🎉 <b>Ваш друг активировал подаренную подписку!</b>\n\n"
+                            f"• Получатель: <b>{friend_name}</b>\n"
+                            f"• Срок подарка: <b>{voucher.days_label}</b>\n\n"
+                            f"Спасибо, что делитесь GhostVPN с друзьями!"
+                        ),
+                        parse_mode="HTML",
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Не удалось уведомить дарителя %s об активации подарка: %s",
+                        creator.telegram_id,
+                        exc,
+                    )
+
+        return voucher, sub
+

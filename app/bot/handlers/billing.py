@@ -10,6 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.bot.handlers.profile import format_subscription_card
 from app.bot.keyboards.user import (
     back_to_menu_kb,
+    gift_created_kb,
+    gift_payment_methods_kb,
+    gift_plans_list_kb,
     invoice_check_kb,
     payment_methods_kb,
     plans_list_kb,
@@ -18,6 +21,8 @@ from app.bot.keyboards.user import (
 from app.bot.utils import send_or_edit_banner
 from app.core.config import settings
 from app.db.models import (
+    GiftVoucher,
+    GiftVoucherStatus,
     PaymentProviderType,
     Transaction,
     TransactionStatus,
@@ -62,6 +67,19 @@ def calculate_checkout_amounts(
     balance_used = min(user_balance_rub, price_after_discount)
     to_pay = (price_after_discount - balance_used).quantize(Decimal("0.01"))
     return to_pay, balance_used
+
+
+def format_gift_created_message(voucher: GiftVoucher) -> str:
+    return (
+        f"🎁 <b>Подарочная подписка на {voucher.days_label} готова!</b>\n\n"
+        f"• Срок: <b>{voucher.days_label}</b>\n"
+        f"• Устройств: <b>{voucher.limit_ip_label}</b>\n"
+        f"• Код подарка: <code>{voucher.code}</code>\n\n"
+        f"🔗 <b>Персональная подарочная ссылка (нажми для копирования):</b>\n"
+        f"<code>{voucher.deep_link}</code>\n\n"
+        f"<i>💡 Нажми кнопку «📨 Отправить подарок другу» ниже, чтобы переслать готовое приглашение в 1 клик!</i>"
+    )
+
 
 
 @router.callback_query(F.data == "plans:list")
@@ -570,6 +588,20 @@ async def cb_pay_check(
         return
 
     if tx.status == TransactionStatus.COMPLETED:
+        if tx.tx_type == TransactionType.GIFT_SUBSCRIPTION:
+            vouchers = await repo.get_user_gift_vouchers(db_user.id, limit=1)
+            if vouchers:
+                v = vouchers[0]
+                await send_or_edit_banner(
+                    callback,
+                    banner_key="referral",
+                    caption=format_gift_created_message(v),
+                    reply_markup=gift_created_kb(v.code, db_user.language),
+                    lang=db_user.language,
+                    repo=repo,
+                )
+                await callback.answer("Подарок готов!")
+                return
         sub = tx.user.subscription
         card = await format_subscription_card(sub, user=db_user)
         await send_or_edit_banner(
@@ -586,6 +618,18 @@ async def cb_pay_check(
     if tx.status == TransactionStatus.PAID_PENDING_PROVISION:
         vpn_service = VPNService(session)
         ok, sub = await vpn_service.process_successful_payment(tx, bot=bot)
+        if ok and tx.tx_type == TransactionType.GIFT_SUBSCRIPTION and vpn_service.last_gift_voucher:
+            v = vpn_service.last_gift_voucher
+            await send_or_edit_banner(
+                callback,
+                banner_key="referral",
+                caption=format_gift_created_message(v),
+                reply_markup=gift_created_kb(v.code, db_user.language),
+                lang=db_user.language,
+                repo=repo,
+            )
+            await callback.answer("Подарок готов!")
+            return
         if ok and sub:
             card = await format_subscription_card(sub, user=db_user)
             await send_or_edit_banner(
@@ -619,6 +663,18 @@ async def cb_pay_check(
 
     vpn_service = VPNService(session)
     ok, sub = await vpn_service.process_successful_payment(tx, bot=bot)
+    if ok and tx.tx_type == TransactionType.GIFT_SUBSCRIPTION and vpn_service.last_gift_voucher:
+        v = vpn_service.last_gift_voucher
+        await send_or_edit_banner(
+            callback,
+            banner_key="referral",
+            caption=format_gift_created_message(v),
+            reply_markup=gift_created_kb(v.code, db_user.language),
+            lang=db_user.language,
+            repo=repo,
+        )
+        await callback.answer("Подарок готов!")
+        return
     if ok and sub:
         card = await format_subscription_card(sub, user=db_user)
         await send_or_edit_banner(
@@ -689,6 +745,17 @@ async def on_successful_payment(
 
     vpn_service = VPNService(session)
     ok, sub = await vpn_service.process_successful_payment(tx, bot=bot)
+    if ok and tx.tx_type == TransactionType.GIFT_SUBSCRIPTION and vpn_service.last_gift_voucher:
+        v = vpn_service.last_gift_voucher
+        await send_or_edit_banner(
+            message,
+            banner_key="referral",
+            caption=format_gift_created_message(v),
+            reply_markup=gift_created_kb(v.code, db_user.language),
+            lang=db_user.language,
+            repo=repo,
+        )
+        return
     if ok and sub:
         card = await format_subscription_card(sub, user=db_user)
         await send_or_edit_banner(
@@ -706,3 +773,324 @@ async def on_successful_payment(
             reply_markup=back_to_menu_kb(db_user.language),
             parse_mode="HTML",
         )
+
+
+# --- Покупка подарочной подписки для друга (User-to-User Gifts) ---
+@router.callback_query(F.data == "gift:plans")
+async def cb_gift_plans_list(
+    callback: CallbackQuery,
+    repo: Repository,
+    db_user: User,
+) -> None:
+    plans = await repo.get_active_plans()
+    discount = db_user.pending_discount_percent
+    discount_line = (
+        f"\n🎟 <b>Активна персональная скидка -{discount}% на покупку подарка!</b>\n"
+        if discount > 0
+        else ""
+    )
+    text = (
+        f"🎁 <b>Подарить подписку GhostVPN другу</b>\n"
+        f"{discount_line}\n"
+        f"Выбери срок подарочной подписки (1, 3, 6 или 12 мес.).\n"
+        f"Сразу после оплаты бот создаст персональную подарочную ссылку — "
+        f"отправь её другу в 1 клик, и у него мгновенно включится полный доступ без рекламы!\n\n"
+        f"✨ <b>Бонус:</b> если твой друг ещё не пользовался ботом, он автоматически закрепится за тобой по реферальной программе (+{settings.REFERRAL_PERCENT}%)."
+    )
+    await send_or_edit_banner(
+        callback,
+        banner_key="referral",
+        caption=text,
+        reply_markup=gift_plans_list_kb(
+            plans,
+            discount_percent=discount,
+            lang=db_user.language,
+        ),
+        lang=db_user.language,
+        repo=repo,
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("gift:select:"))
+async def cb_gift_plan_select(
+    callback: CallbackQuery,
+    repo: Repository,
+    db_user: User,
+) -> None:
+    parts = (callback.data or "").split(":")
+    plan_id = int(parts[2])
+    use_balance = len(parts) > 3 and parts[3] == "1"
+
+    plan = await repo.get_plan_by_id(plan_id)
+    if plan is None or not plan.is_active:
+        await callback.answer("Тариф не найден.", show_alert=True)
+        return
+
+    base_plan_price = Decimal(str(plan.price_rub)).quantize(Decimal("0.01"))
+    to_pay_rub, balance_used_rub = calculate_checkout_amounts(
+        plan_price_rub=base_plan_price,
+        discount_percent=db_user.pending_discount_percent,
+        user_balance_rub=db_user.balance_rub,
+        use_balance=use_balance,
+    )
+    price_after_promo, _ = calculate_checkout_amounts(
+        plan_price_rub=base_plan_price,
+        discount_percent=db_user.pending_discount_percent,
+        user_balance_rub=db_user.balance_rub,
+        use_balance=False,
+    )
+
+    text = (
+        f"🎁 <b>Оформление подарка: {plan.name} ({plan.days} дн.)</b>\n\n"
+        f"• Включено устройств: <b>{plan.limit_ip} устр.</b>\n"
+        f"• Стоимость тарифа: <b>{base_plan_price} ₽</b>\n"
+    )
+    if db_user.pending_discount_percent > 0:
+        text += f"• Скидка по промокоду: <b>-{db_user.pending_discount_percent}%</b>\n"
+    if use_balance and balance_used_rub > Decimal("0.00"):
+        text += f"• Списание с бонусного баланса: <b>-{balance_used_rub} ₽</b>\n"
+
+    text += f"\n💵 <b>Итого к оплате: {to_pay_rub} ₽</b>\nВыбери удобный способ оплаты подарка:"
+
+    await send_or_edit_banner(
+        callback,
+        banner_key="referral",
+        caption=text,
+        reply_markup=gift_payment_methods_kb(
+            plan_id=plan.id,
+            final_price_rub=price_after_promo,
+            user_balance_rub=db_user.balance_rub,
+            use_balance=use_balance,
+        ),
+        lang=db_user.language,
+        repo=repo,
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("gift:pay_balance_full:"))
+async def cb_gift_pay_balance_full(
+    callback: CallbackQuery,
+    bot: Bot,
+    session: AsyncSession,
+    repo: Repository,
+    db_user: User,
+) -> None:
+    plan_id = int((callback.data or "").split(":")[2])
+    plan = await repo.get_plan_by_id(plan_id)
+    if plan is None or not plan.is_active:
+        await callback.answer("Тариф не найден.", show_alert=True)
+        return
+
+    base_plan_price = Decimal(str(plan.price_rub)).quantize(Decimal("0.01"))
+    _, balance_needed = calculate_checkout_amounts(
+        plan_price_rub=base_plan_price,
+        discount_percent=db_user.pending_discount_percent,
+        user_balance_rub=db_user.balance_rub,
+        use_balance=True,
+    )
+    price_after_promo, _ = calculate_checkout_amounts(
+        plan_price_rub=base_plan_price,
+        discount_percent=db_user.pending_discount_percent,
+        user_balance_rub=db_user.balance_rub,
+        use_balance=False,
+    )
+    if db_user.balance_rub < price_after_promo:
+        await callback.answer("Недостаточно средств на балансе.", show_alert=True)
+        return
+
+    await repo.create_gift_voucher(
+        creator_user_id=db_user.id,
+        days=plan.days,
+        limit_ip=plan.limit_ip,
+        is_admin_gift=False,
+        status=GiftVoucherStatus.PENDING_PAYMENT,
+    )
+    tx = Transaction(
+        user_id=db_user.id,
+        plan_id=plan.id,
+        tx_type=TransactionType.GIFT_SUBSCRIPTION,
+        provider=PaymentProviderType.BALANCE,
+        currency="RUB",
+        amount_currency=balance_needed,
+        amount_rub=Decimal("0.00"),
+        balance_used_rub=balance_needed,
+        discount_percent=db_user.pending_discount_percent,
+        status=TransactionStatus.PENDING,
+    )
+    session.add(tx)
+    await session.commit()
+    await session.refresh(tx)
+
+    vpn_service = VPNService(session)
+    ok, _ = await vpn_service.process_successful_payment(tx, bot=bot)
+    voucher = vpn_service.last_gift_voucher
+    if ok and voucher:
+        await send_or_edit_banner(
+            callback,
+            banner_key="referral",
+            caption=format_gift_created_message(voucher),
+            reply_markup=gift_created_kb(voucher.code, db_user.language),
+            lang=db_user.language,
+            repo=repo,
+        )
+    await callback.answer("Подарочная ссылка создана!")
+
+
+@router.callback_query(F.data.startswith("gift:pay_create:"))
+async def cb_gift_pay_create(
+    callback: CallbackQuery,
+    bot: Bot,
+    session: AsyncSession,
+    repo: Repository,
+    db_user: User,
+) -> None:
+    recent_pending = await repo.count_recent_pending_transactions(db_user.id, minutes=10)
+    if recent_pending >= 5:
+        await callback.answer(
+            "⏳ У тебя уже создано несколько неоплаченных счетов. Оплати любой из них или подожди пару минут.",
+            show_alert=True,
+        )
+        return
+
+    parts = (callback.data or "").split(":")
+    provider_str = parts[2]
+    plan_id = int(parts[3])
+    use_balance = len(parts) > 4 and parts[4] == "1"
+
+    plan = await repo.get_plan_by_id(plan_id)
+    if plan is None or not plan.is_active:
+        await callback.answer("Тариф не найден.", show_alert=True)
+        return
+
+    base_plan_price = Decimal(str(plan.price_rub)).quantize(Decimal("0.01"))
+    to_pay_rub, balance_used_rub = calculate_checkout_amounts(
+        plan_price_rub=base_plan_price,
+        discount_percent=db_user.pending_discount_percent,
+        user_balance_rub=db_user.balance_rub,
+        use_balance=use_balance,
+    )
+    if to_pay_rub <= Decimal("0.00"):
+        await callback.answer("Используй кнопку полной оплаты с баланса.", show_alert=True)
+        return
+
+    provider_enum = PaymentProviderType(provider_str)
+    currency_code = (
+        "XTR"
+        if provider_enum == PaymentProviderType.STARS
+        else ("USDT" if provider_enum == PaymentProviderType.CRYPTOBOT else "RUB")
+    )
+    await repo.create_gift_voucher(
+        creator_user_id=db_user.id,
+        days=plan.days,
+        limit_ip=plan.limit_ip,
+        is_admin_gift=False,
+        status=GiftVoucherStatus.PENDING_PAYMENT,
+    )
+    tx = Transaction(
+        user_id=db_user.id,
+        plan_id=plan.id,
+        tx_type=TransactionType.GIFT_SUBSCRIPTION,
+        provider=provider_enum,
+        currency=currency_code,
+        amount_currency=to_pay_rub,
+        amount_rub=to_pay_rub,
+        balance_used_rub=balance_used_rub,
+        discount_percent=db_user.pending_discount_percent,
+        status=TransactionStatus.PENDING,
+    )
+    session.add(tx)
+    await session.commit()
+    await session.refresh(tx)
+
+    description = f"GhostVPN: Подарок {plan.name} ({plan.days} дн.)"
+
+    if provider_enum == PaymentProviderType.STARS:
+        stars_provider = TelegramStarsProvider()
+        inv = await stars_provider.create_invoice(
+            transaction_id=tx.id,
+            amount_rub=to_pay_rub,
+            description=description,
+            user_telegram_id=db_user.telegram_id,
+        )
+        tx.external_id = inv.external_id
+        tx.amount_currency = Decimal(str(inv.stars_amount or 1))
+        await session.commit()
+
+        await bot.send_invoice(
+            chat_id=db_user.telegram_id,
+            title=f"🎁 Подарок GhostVPN — {plan.name}",
+            description=description,
+            payload=f"tx:{tx.id}",
+            provider_token="",
+            currency="XTR",
+            prices=[LabeledPrice(label=f"Подарок: {plan.name}", amount=inv.stars_amount or 1)],
+        )
+        await callback.answer("Счёт в Telegram Stars выставлен!")
+        return
+
+    if provider_enum == PaymentProviderType.CRYPTOBOT:
+        crypto_provider = CryptoBotProvider()
+        try:
+            inv = await crypto_provider.create_invoice(
+                transaction_id=tx.id,
+                amount_rub=to_pay_rub,
+                description=description,
+                user_telegram_id=db_user.telegram_id,
+            )
+        except CryptoBotError as exc:
+            tx.status = TransactionStatus.CANCELED
+            await session.commit()
+            await callback.answer(f"Ошибка CryptoBot: {exc}", show_alert=True)
+            return
+
+        tx.external_id = inv.external_id
+        tx.payment_url = inv.payment_url
+        await session.commit()
+
+        if inv.payment_url:
+            await send_or_edit_banner(
+                callback,
+                banner_key="referral",
+                caption=(
+                    f"💎 <b>Оплата подарка через CryptoBot #{inv.external_id}</b>\n\n"
+                    f"• Подарок: <b>{plan.name} ({plan.days} дн.)</b>\n"
+                    f"• Сумма к оплате: <b>{to_pay_rub} ₽</b>\n\n"
+                    f"Нажми «🔗 Перейти к оплате». После оплаты ты сразу получишь подарочную ссылку!"
+                ),
+                reply_markup=invoice_check_kb(tx.id, inv.payment_url),
+                lang=db_user.language,
+                repo=repo,
+            )
+        await callback.answer()
+        return
+
+    if provider_enum == PaymentProviderType.RUB_GATEWAY:
+        rub_provider = FreeKassaProvider()
+        inv = await rub_provider.create_invoice(
+            transaction_id=tx.id,
+            amount_rub=to_pay_rub,
+            description=description,
+            user_telegram_id=db_user.telegram_id,
+        )
+        tx.external_id = inv.external_id
+        tx.payment_url = inv.payment_url
+        await session.commit()
+
+        if inv.payment_url:
+            await send_or_edit_banner(
+                callback,
+                banner_key="referral",
+                caption=(
+                    f"💳 <b>Оплата подарка СБП / Картой РФ (Заказ #{tx.id})</b>\n\n"
+                    f"• Подарок: <b>{plan.name} ({plan.days} дн.)</b>\n"
+                    f"• Сумма к оплате: <b>{to_pay_rub} ₽</b>\n\n"
+                    f"Нажми «🔗 Перейти к оплате». Сразу после оплаты тебе придёт готовая подарочная ссылка!"
+                ),
+                reply_markup=invoice_check_kb(tx.id, inv.payment_url),
+                lang=db_user.language,
+                repo=repo,
+            )
+        await callback.answer()
+
