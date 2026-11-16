@@ -445,8 +445,8 @@ async def test_dual_reality_inbounds_sync_and_mobile_multiprofile_formats(
         # и автоматического добавления клиента в новые инбаунды #2..5, где его ещё не было
         mock_xui.add_client.reset_mock()
         expected_titles = [
-            "🇳🇱 GhostVPN • Основной (+ Fragment)",
-            "🇳🇱 GhostVPN • Резерв XHTTP (+ Fragment)",
+            "🇳🇱 GhostFaceVPN • Основной",
+            "🇳🇱 GhostFaceVPN • Резервный",
             "⚡️ Узел 3",
             "⚡️ Узел 4",
             "⚡️ Узел 5",
@@ -555,6 +555,38 @@ async def test_dual_reality_inbounds_sync_and_mobile_multiprofile_formats(
                 welcome_ru = t("welcome_title", "ru", limit_ip=3, status_line="OK", balance=0, terms_url="#")
                 assert "Российские банки и Госуслуги работают без отключения" in welcome_ru
                 assert "Встроенная блокировка рекламы" in welcome_ru
+                assert "Стабильный интернет без ограничений по скорости" in welcome_ru
+                assert "Доступно из любой точки мира" in welcome_ru
+
+                # 4e. Проверка раздела «ℹ️ О сервисе» и соблюдения правил модерации FreeKassa
+                from app.bot.keyboards.user import about_service_kb
+
+                assert settings.DOCS_UPDATED_DATE == "16.11.2026"
+                assert "telegra.ph/Politika-konfidencialnosti-08-01-83" in settings.PRIVACY_URL
+                assert "telegra.ph/Polzovatelskoe-soglashenie-08-01-39" in settings.TERMS_URL
+                about_kb = about_service_kb("ru")
+                btn_texts = [row[0].text for row in about_kb.inline_keyboard]
+                assert "📄 Политика конфиденциальности (от 16.11.2026)" in btn_texts
+                assert "📜 Пользовательское соглашение (от 16.11.2026)" in btn_texts
+                assert "💬 Поддержка (@imran_wxz)" in btn_texts
+
+                for doc_path in ("/privacy", "/terms"):
+                    resp_doc = await client.get(doc_path)
+                    assert resp_doc.status_code == 200
+                    assert "16 ноября 2026 г." in resp_doc.text
+                    assert "@imran_wxz" in resp_doc.text
+                    lower_doc = resp_doc.text.lower()
+                    for forbidden in (
+                        "шифрован",
+                        "глушил",
+                        "сокрыти",
+                        "невидим",
+                        "обход блокиров",
+                        "обход ограничен",
+                        "белые списки",
+                        "lte",
+                    ):
+                        assert forbidden not in lower_doc
 
                 # 5. Единая ссылка подписки {WEBHOOK_BASE_URL}/sub/mobile/{sub_id} везде по умолчанию
                 expected_unified = f"{settings.WEBHOOK_BASE_URL.rstrip('/')}/sub/mobile/{sub.sub_id}"

@@ -30,16 +30,16 @@ _MEMORY_FILE_IDS: Dict[Tuple[str, str, str], str] = {}
 
 BANNER_SPECS: dict[str, dict[str, tuple[str, str]]] = {
     "main": {
-        "ru": ("ТВОЯ ТЕНЬ В СЕТИ", "Быстрый доступ без ограничений и слежки"),
-        "en": ("YOUR SHADOW ONLINE", "Fast access without limits or tracking"),
+        "ru": ("СТАБИЛЬНАЯ СЕТЬ", "Стабильный интернет без ограничений по скорости"),
+        "en": ("STABLE NETWORK", "Stable internet without speed limits"),
     },
     "trial": {
-        "ru": ("ПРОБНЫЙ ДОСТУП", "Протестируй скорость и обход блокировок"),
-        "en": ("TRIAL ACCESS", "Test the speed and bypass restrictions"),
+        "ru": ("ПРОБНЫЙ ДОСТУП", "Доступно из любой точки мира"),
+        "en": ("TRIAL ACCESS", "Available from anywhere in the world"),
     },
     "tariffs": {
-        "ru": ("ТАРИФЫ И ДОСТУП", "Выбери подходящий период защиты"),
-        "en": ("PLANS & ACCESS", "Choose the right protection period"),
+        "ru": ("ТАРИФЫ И ДОСТУП", "Выбери подходящий период подключения"),
+        "en": ("PLANS & ACCESS", "Choose the right connection period"),
     },
     "profile": {
         "ru": ("ЛИЧНЫЙ КАБИНЕТ", "Управление подпиской, ключом и устройствами"),
@@ -50,8 +50,8 @@ BANNER_SPECS: dict[str, dict[str, tuple[str, str]]] = {
         "en": ("CONNECTION", "1-click setup for iOS, Android, and PC"),
     },
     "devices": {
-        "ru": ("УСТРОЙСТВА И LTE", "Стабильная работа на мобильном интернете"),
-        "en": ("DEVICES & LTE", "Stable performance on mobile networks"),
+        "ru": ("МОИ УСТРОЙСТВА", "Стабильная работа на всех устройствах"),
+        "en": ("MY DEVICES", "Stable performance across all devices"),
     },
     "referral": {
         "ru": ("БОНУСЫ ЗА ДРУЗЕЙ", "Получай 15% с каждой оплаты приглашённых"),

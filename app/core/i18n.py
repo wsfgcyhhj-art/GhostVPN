@@ -4,14 +4,14 @@ from typing import Any
 
 TRANSLATIONS: dict[str, dict[str, str]] = {
     "ru": {
-        "welcome_title": "👻 <b>Привет! Это GhostVPN — твой быстрый и заботливый интернет без границ!</b>\n\n"
-        "Мы сделали всё максимально просто: нажал одну кнопку — и всё летает (YouTube в 4K, Instagram, звонки и сайты без тормозов).\n\n"
-        "✨ <b>Почему с нами уютно:</b>\n"
-        "• 🇳🇱 Быстрый сервер в Нидерландах (до 500 Мбит/с)\n"
+        "welcome_title": "👻 <b>Привет! Это GhostFaceVPN — стабильный интернет без ограничений по скорости!</b>\n\n"
+        "Высокоскоростное защищённое соединение для комфортной работы и стриминга (YouTube в 4K, звонки и сайты без задержек).\n\n"
+        "✨ <b>Преимущества сервиса:</b>\n"
+        "• 🌍 Доступно из любой точки мира (до 500 Мбит/с)\n"
         "• 🏦 <b>Российские банки и Госуслуги работают без отключения</b>\n"
         "• 🚫 <b>Встроенная блокировка рекламы</b>\n"
         "• 📱 До <b>{limit_ip} устройств</b> одновременно (телефон, ноутбук, планшет)\n"
-        "• 🛡 Обход глушилок на мобильном интернете (TLS Fragment)\n\n"
+        "• ⚡️ Стабильный интернет без ограничений по скорости\n\n"
         "📊 <b>Твой статус:</b> {status_line}\n"
         "💰 <b>Бонусный баланс:</b> <b>{balance} ₽</b>\n\n"
         "<i>Продолжая пользоваться ботом, ты принимаешь <a href='{terms_url}'>правила сервиса</a> (без торрентов и спама).</i>",
@@ -40,25 +40,25 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "btn_auto_renew_off": "🔄 Автопродление: ВЫКЛ ❌",
         "btn_qr_card": "🖼 Красивая QR-карточка",
         "btn_reissue": "🔄 Обновить ссылку",
-        "btn_connect_oneclick": "📲 Подключить в 1 клик (Wi-Fi + LTE)",
-        "btn_mobile_boost": "📶 Не грузит на мобильном?",
+        "btn_connect_oneclick": "📲 Подключить в 1 клик",
+        "btn_mobile_boost": "⚙️ Инструкция по подключению",
         "btn_gift_friend": "🎁 Подарить 3 дня другу",
         "btn_gift_sub_friend": "🎁 Подарить подписку другу",
         "btn_my_gifts": "🎁 Мои подарки",
         "share_friend_text": "Держи бесплатный доступ к быстрому интернету без рекламы — работает и на домашней сети, и на мобильной связи, российские банки открываются без отключения",
         "gift_share_text": "🎁 Дарю тебе подписку на быстрый VPN без рекламы! Переходи по ссылке и забирай доступ в 1 клик",
-        "node_primary_title": "🇳🇱 GhostVPN • Основной (+ Fragment)",
-        "node_reserve_title": "🇳🇱 GhostVPN • Резерв XHTTP (+ Fragment)",
+        "node_primary_title": "🇳🇱 GhostFaceVPN • Основной",
+        "node_reserve_title": "🇳🇱 GhostFaceVPN • Резервный",
     },
     "en": {
-        "welcome_title": "👻 <b>Welcome to GhostVPN — your fast, friendly, borderless internet!</b>\n\n"
-        "We made everything effortless: tap one button and enjoy 4K streaming, calls, and websites without limits.\n\n"
+        "welcome_title": "👻 <b>Welcome to GhostVPN — stable internet without speed limits!</b>\n\n"
+        "High-speed protected connection for comfortable work and 4K streaming.\n\n"
         "✨ <b>Why you'll love GhostVPN:</b>\n"
-        "• 🇳🇱 Ultra-fast Netherlands location (up to 500 Mbps)\n"
+        "• 🌍 Available from anywhere in the world (up to 500 Mbps)\n"
         "• 🏦 <b>Russian banks & Gosuslugi work directly without disconnecting</b>\n"
         "• 🚫 <b>Built-in ad & tracker blocker</b>\n"
         "• 📱 Up to <b>{limit_ip} devices</b> at the same time\n"
-        "• 🛡 Mobile ISP anti-throttling (TLS Fragment ready)\n\n"
+        "• ⚡️ Stable internet without speed limits\n\n"
         "📊 <b>Your status:</b> {status_line}\n"
         "💰 <b>Bonus balance:</b> <b>{balance} ₽</b>\n\n"
         "<i>By using this bot, you agree to our <a href='{terms_url}'>Terms of Service</a> (no torrents or spam).</i>",
@@ -87,15 +87,15 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "btn_auto_renew_off": "🔄 Auto-renew: OFF ❌",
         "btn_qr_card": "🖼 Branded QR Card",
         "btn_reissue": "🔄 Re-issue Link",
-        "btn_connect_oneclick": "📲 1-Click Connect (Wi-Fi + LTE)",
-        "btn_mobile_boost": "📶 Mobile (LTE) Help",
+        "btn_connect_oneclick": "📲 1-Click Connect",
+        "btn_mobile_boost": "⚙️ Инструкция по подключению",
         "btn_gift_friend": "🎁 Gift 3 Days to a Friend",
         "btn_gift_sub_friend": "🎁 Подарить подписку другу",
         "btn_my_gifts": "🎁 Мои подарки",
         "share_friend_text": "Держи бесплатный доступ к быстрому интернету без рекламы — работает и на домашней сети, и на мобильной связи, российские банки открываются без отключения",
         "gift_share_text": "🎁 Дарю тебе подписку на быстрый VPN без рекламы! Переходи по ссылке и забирай доступ в 1 клик",
-        "node_primary_title": "🇳🇱 GhostVPN • Основной (+ Fragment)",
-        "node_reserve_title": "🇳🇱 GhostVPN • Резерв XHTTP (+ Fragment)",
+        "node_primary_title": "🇳🇱 GhostFaceVPN • Основной",
+        "node_reserve_title": "🇳🇱 GhostFaceVPN • Резервный",
     },
 }
 

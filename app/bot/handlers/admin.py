@@ -230,14 +230,14 @@ async def cb_admin_sync_bot_profile(callback: CallbackQuery, bot: Bot) -> None:
             ]
         )
         await bot.set_my_short_description(
-            short_description="👻 GhostVPN — твоя цифровая тень в сети. VLESS Reality 500 Мбит/с, YouTube 4K и обход мобильных глушилок."
+            short_description="👻 GhostFaceVPN — стабильный интернет без ограничений по скорости. Высокоскоростное защищённое соединение."
         )
         await bot.set_my_description(
             description=(
-                "👻 Добро пожаловать в GhostVPN (Ghostface Edition)!\n\n"
-                "• 🇳🇱 Скоростной сервер в Нидерландах (до 500 Мбит/с)\n"
+                "👻 Добро пожаловать в GhostFaceVPN!\n\n"
+                "• 🌍 Доступно из любой точки мира (до 500 Мбит/с)\n"
                 "• 🔥 Полный тест-драйв на 3 дня за 1 ₽\n"
-                "• 🛡 Обход блокировок и мобильных глушилок (TLS Fragment)\n"
+                "• 🛡 Высокоскоростное защищённое соединение для комфортной работы и стриминга\n"
                 "• 📱 Подключение в 1 клик на iPhone, Android, Windows и Mac\n\n"
                 "Нажми «Начать» (/start), чтобы забрать свой ключ!"
             )
@@ -1253,7 +1253,7 @@ async def _execute_admin_direct_gift(
                 chat_id=target_user.telegram_id,
                 text=(
                     f"🎁 <b>Администратор подарил вам подписку на {days_text}!</b>\n\n"
-                    f"Ваша защита уже активирована. Нажмите кнопку <b>«📲 Подключить в 1 клик (Wi-Fi + LTE)»</b> ниже:\n\n"
+                    f"Ваша защита уже активирована. Нажмите кнопку <b>«📲 Подключить в 1 клик»</b> ниже:\n\n"
                     f"📋 <b>Ссылка подписки:</b>\n<code>{sub.subscription_url}</code>"
                 ),
                 reply_markup=subscription_card_kb(target_user, sub),

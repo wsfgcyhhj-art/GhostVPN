@@ -513,7 +513,7 @@ async def run_retention_onboarding_and_winback(bot: Bot | None = None) -> dict[s
                             ],
                             [
                                 InlineKeyboardButton(
-                                    text="📶 Не грузит на мобильном?",
+                                    text="⚙️ Инструкция по подключению",
                                     callback_data="help:mobile_boost",
                                 )
                             ],

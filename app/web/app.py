@@ -577,7 +577,7 @@ async def webapp_create_payment(
     return {"ok": True, "payment_url": inv.payment_url}
 
 
-# --- Smart Mobile Anti-DPI Subscription Endpoint (/sub/mobile/{sub_id}) ---
+# --- Smart Multi-Profile Subscription Endpoint (/sub/mobile/{sub_id}) ---
 @app.get("/sub/mobile/{sub_id}", response_model=None)
 async def get_mobile_fragment_subscription(
     sub_id: str,
@@ -586,11 +586,11 @@ async def get_mobile_fragment_subscription(
     session: AsyncSession = Depends(get_db_session),
 ) -> Response:
     """
-    Умный мульти-эндпоинт для обхода мобильных глушилок (LTE / ТСПУ).
+    Умный мульти-эндпоинт единой подписки.
     Считывает актуальные `serverNames` (SNI), `publicKey`, `shortId` и `port` из основного
     (`XUI_INBOUND_ID`) и резервного (`XUI_MOBILE_INBOUND_ID`) инбаундов в 3X-UI и отдаёт оба подключения:
-      1) «🇳🇱 GhostVPN • Основной (+ Fragment)»
-      2) «🇳🇱 GhostVPN • Резерв XHTTP (+ Fragment)»
+      1) «🇳🇱 GhostFaceVPN • Основной»
+      2) «🇳🇱 GhostFaceVPN • Резервный»
     В зависимости от `User-Agent` (Happ / v2rayTun / Hiddify / Clash / Shadowrocket) или `?format=yaml|base64|json`
     возвращает JSON мульти-профиль, YAML-конфиг или Base64-подписку.
     """

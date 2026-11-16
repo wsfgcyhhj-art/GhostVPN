@@ -34,8 +34,8 @@ if TYPE_CHECKING:
 
 ALPHABET = string.ascii_lowercase + string.digits
 
-NODE_TITLE_PRIMARY = "🇳🇱 GhostVPN • Основной (+ Fragment)"
-NODE_TITLE_RESERVE = "🇳🇱 GhostVPN • Резерв XHTTP (+ Fragment)"
+NODE_TITLE_PRIMARY = "🇳🇱 GhostFaceVPN • Основной"
+NODE_TITLE_RESERVE = "🇳🇱 GhostFaceVPN • Резервный"
 
 EU_NODE_TITLES: list[str] = [
     NODE_TITLE_PRIMARY,
@@ -106,7 +106,7 @@ def generate_sub_id(length: int = 16) -> str:
 def build_subscription_url(sub_id: str, server: Server | None = None) -> str:
     """
     Возвращает единую универсальную мульти-подписку `{WEBHOOK_BASE_URL}/sub/mobile/{sub_id}`
-    (включающую профили «🇳🇱 GhostVPN • Основной (+ Fragment)» и «🇳🇱 GhostVPN • Резерв XHTTP (+ Fragment)» для Wi-Fi и LTE).
+    (включающую профили «🇳🇱 GhostFaceVPN • Основной» и «🇳🇱 GhostFaceVPN • Резервный»).
     Если `WEBHOOK_BASE_URL` пустой — возвращает запасной фоллбэк на прямую ссылку 3X-UI (`XUI_SUB_BASE_URL/{sub_id}`).
     """
     web_base = (settings.WEBHOOK_BASE_URL or "").strip().rstrip("/")
@@ -457,7 +457,7 @@ def render_mobile_yaml_profile(multi_profile: dict[str, Any]) -> str:
     lines.extend(
         [
             "proxy-groups:",
-            '  - name: "👻 GhostVPN LTE"',
+            '  - name: "👻 GhostFaceVPN"',
             "    type: url-test",
             "    url: http://www.gstatic.com/generate_204",
             "    interval: 120",
@@ -477,7 +477,7 @@ def render_mobile_yaml_profile(multi_profile: dict[str, Any]) -> str:
             "  - DOMAIN-SUFFIX,su,DIRECT",
             "  - GEOIP,private,DIRECT,no-resolve",
             "  - GEOIP,RU,DIRECT",
-            "  - MATCH,👻 GhostVPN LTE",
+            "  - MATCH,👻 GhostFaceVPN",
         ]
     )
     return "\n".join(lines) + "\n"
@@ -491,7 +491,7 @@ def datetime_to_ms(dt: datetime) -> int:
 class VPNService:
     """
     Оркестратор выдачи, продления, слотов устройств, сброса и деактивации подписок в БД и 3X-UI.
-    Синхронизирует каждого клиента одновременно в основном (`XUI_INBOUND_ID`) и резервном LTE (`XUI_MOBILE_INBOUND_ID`) инбаундах.
+    Синхронизирует каждого клиента одновременно в основном (`XUI_INBOUND_ID`) и резервном (`XUI_MOBILE_INBOUND_ID`) инбаундах.
     """
 
     def __init__(
@@ -801,7 +801,7 @@ class VPNService:
         plan_id: int | None = None,
     ) -> Subscription:
         """
-        Создаёт клиента в 3X-UI (в основном и резервном LTE-инбаунде) при первой выдаче
+        Создаёт клиента в 3X-UI (в основном и резервном инбаундах) при первой выдаче
         или обновляет существующего при продлении, сохраняя его `subId` и `uuid`.
         """
         now = utcnow()
@@ -1013,7 +1013,7 @@ class VPNService:
 
     async def reissue_key(self, user: User, *, force_by_admin: bool = False) -> Subscription:
         """
-        Перегенерирует UUID и subId одновременно в основном и резервном LTE-инбаундах 3X-UI
+        Перегенерирует UUID и subId одновременно в основном и резервном инбаундах 3X-UI
         с сохранением текущего срока действия `expires_at`.
         """
         res = await self.session.execute(

@@ -20,9 +20,13 @@ class Settings(BaseSettings):
     WEBHOOK_BASE_URL: str = Field(default="https://ghostvpn.onrender.com")
     WEBHOOK_SECRET: str = Field(default="super_secret_telegram_webhook_token")
     SUPPORT_URL: str = Field(default="https://t.me/imran_wxz")
+    PRIVACY_URL: str = Field(
+        default="https://telegra.ph/Politika-konfidencialnosti-08-01-83"
+    )
+    TERMS_URL: str = Field(
+        default="https://telegra.ph/Polzovatelskoe-soglashenie-08-01-39"
+    )
     DOCS_UPDATED_DATE: str = Field(default="16.11.2026")
-    PRIVACY_URL: str = Field(default="")
-    TERMS_URL: str = Field(default="")
 
     # --- Admins & Alerts ---
     ADMIN_IDS: List[int] = Field(default_factory=list)
@@ -130,11 +134,10 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def ensure_legal_doc_urls(self) -> "Settings":
-        base = (self.WEBHOOK_BASE_URL or "https://ghostvpn.onrender.com").strip().rstrip("/")
-        if not self.PRIVACY_URL or "telegra.ph" in self.PRIVACY_URL:
-            self.PRIVACY_URL = f"{base}/privacy"
-        if not self.TERMS_URL or "telegra.ph" in self.TERMS_URL:
-            self.TERMS_URL = f"{base}/terms"
+        if not self.PRIVACY_URL or "Privacy-Policy-GhostVPN" in self.PRIVACY_URL:
+            self.PRIVACY_URL = "https://telegra.ph/Politika-konfidencialnosti-08-01-83"
+        if not self.TERMS_URL or "Terms-of-Service-GhostVPN" in self.TERMS_URL:
+            self.TERMS_URL = "https://telegra.ph/Polzovatelskoe-soglashenie-08-01-39"
         return self
 
 

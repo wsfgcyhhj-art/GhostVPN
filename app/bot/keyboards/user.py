@@ -521,7 +521,7 @@ def instructions_kb(lang: str = "ru") -> InlineKeyboardMarkup:
 
 def faq_menu_kb(lang: str = "ru") -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    b.row(InlineKeyboardButton(text="📶 Не грузит на мобильном интернете", callback_data="help:mobile_boost"))
+    b.row(InlineKeyboardButton(text="⚙️ Инструкция по подключению", callback_data="help:mobile_boost"))
     b.row(InlineKeyboardButton(text="📲 Как подключить на iPhone / Android / ПК", callback_data="help:instructions"))
     b.row(InlineKeyboardButton(text="💳 Вопросы по оплате и автопродлению", callback_data="help:faq_billing"))
     b.row(InlineKeyboardButton(text="💬 Связаться со специалистом 24/7", url=settings.SUPPORT_URL))
@@ -574,13 +574,13 @@ def about_service_kb(lang: str = "ru") -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.row(
         InlineKeyboardButton(
-            text=f"📄 Политика конфиденциальности ({doc_date})",
+            text=f"📄 Политика конфиденциальности (от {doc_date})",
             url=settings.PRIVACY_URL,
         )
     )
     b.row(
         InlineKeyboardButton(
-            text=f"📜 Пользовательское соглашение ({doc_date})",
+            text=f"📜 Пользовательское соглашение (от {doc_date})",
             url=settings.TERMS_URL,
         )
     )
