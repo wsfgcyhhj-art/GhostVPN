@@ -273,7 +273,7 @@ async def serve_privacy_policy() -> HTMLResponse:
 <body>
   <div class="doc-card">
     <h1>Политика конфиденциальности сервиса GhostFaceVPN</h1>
-    <div class="meta"><b>Дата публикации и вступления в силу: 16 ноября 2026 г.</b></div>
+    <div class="meta"><b>Дата публикации и вступления в силу: 16 ноября 2026 г. (16.11.2026)</b></div>
 
     <p>Настоящая Политика конфиденциальности определяет порядок обработки и защиты минимальных технических данных пользователей Telegram-бота <b>@Ghost_Face_VPN_bot</b> (сервис <b>GhostFaceVPN</b>).</p>
 
@@ -342,7 +342,7 @@ async def serve_terms_of_service() -> HTMLResponse:
 <body>
   <div class="doc-card">
     <h1>Пользовательское соглашение сервиса GhostFaceVPN</h1>
-    <div class="meta"><b>Дата публикации и вступления в силу: 16 ноября 2026 г.</b></div>
+    <div class="meta"><b>Дата публикации и вступления в силу: 16 ноября 2026 г. (16.11.2026)</b></div>
 
     <p>Настоящее Пользовательское соглашение регулирует отношения между сервисом <b>GhostFaceVPN</b> (Telegram-бот <b>@Ghost_Face_VPN_bot</b>) и пользователем при оказании цифровых услуг.</p>
 
@@ -613,7 +613,7 @@ async def get_mobile_fragment_subscription(
     multi_profile = await vpn_service.fetch_live_mobile_profile(sub)
 
     common_headers = {
-        "Profile-Title": "GhostVPN-Mobile-Stealth",
+        "Profile-Title": "GhostFaceVPN",
         "Subscription-Userinfo": (
             f"upload=0; download={sub.used_traffic_bytes}; total=0; "
             f"expire={int(sub.expires_at.timestamp())}"

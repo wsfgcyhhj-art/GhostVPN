@@ -59,9 +59,9 @@ def generate_branded_qr_card(
         font_sub = load_font(bold=True, size=18)
         font_meta = load_font(bold=False, size=17)
 
-        draw.text((202, 72), "GHOSTVPN // STEALTH KEY", fill=ghost_white, font=font_title)
-        draw.text((202, 114), "VLESS REALITY • TLS FRAGMENT", fill=red_neon, font=font_sub)
-        draw.text((202, 144), "Твоя цифровая тень в сети", fill=muted_gray, font=font_meta)
+        draw.text((202, 72), "GHOSTFACEVPN // ACCESS KEY", fill=ghost_white, font=font_title)
+        draw.text((202, 114), "HIGH-SPEED NETWORK ACCESS", fill=red_neon, font=font_sub)
+        draw.text((202, 144), "Стабильный интернет без ограничений по скорости", fill=muted_gray, font=font_meta)
 
         qr = qrcode.QRCode(
             version=1,

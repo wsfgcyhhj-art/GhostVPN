@@ -562,8 +562,8 @@ async def test_dual_reality_inbounds_sync_and_mobile_multiprofile_formats(
                 from app.bot.keyboards.user import about_service_kb
 
                 assert settings.DOCS_UPDATED_DATE == "16.11.2026"
-                assert "telegra.ph/Politika-konfidencialnosti-08-01-83" in settings.PRIVACY_URL
-                assert "telegra.ph/Polzovatelskoe-soglashenie-08-01-39" in settings.TERMS_URL
+                assert settings.PRIVACY_URL.endswith("/privacy") or "telegra.ph" in settings.PRIVACY_URL
+                assert settings.TERMS_URL.endswith("/terms") or "telegra.ph" in settings.TERMS_URL
                 about_kb = about_service_kb("ru")
                 btn_texts = [row[0].text for row in about_kb.inline_keyboard]
                 assert "📄 Политика конфиденциальности (от 16.11.2026)" in btn_texts

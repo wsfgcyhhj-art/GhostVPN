@@ -384,7 +384,7 @@ def build_tls_fragment_profile(
     b64_links = base64.b64encode(raw_links.encode("utf-8")).decode("ascii")
 
     return {
-        "remarks": f"GhostVPN 🇪🇺 Europe Anti-DPI ({sub.sub_id[:6]})",
+        "remarks": f"GhostFaceVPN ({sub.sub_id[:6]})",
         "subscription_url": build_subscription_url(sub.sub_id, server=server),
         "dns": {
             "servers": ["https://1.1.1.1/dns-query", "77.88.8.8"],
@@ -411,7 +411,7 @@ def render_mobile_yaml_profile(multi_profile: dict[str, Any]) -> str:
     """
     profiles = multi_profile.get("profiles", [])
     lines = [
-        "# GhostVPN Europe Anti-DPI Multi-Profile",
+        "# GhostFaceVPN Multi-Profile",
         "mixed-port: 7890",
         "allow-lan: false",
         "mode: rule",
