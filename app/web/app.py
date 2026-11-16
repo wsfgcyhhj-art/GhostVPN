@@ -278,7 +278,7 @@ async def serve_privacy_policy() -> HTMLResponse:
     <p>Настоящая Политика конфиденциальности определяет порядок обработки и защиты минимальных технических данных пользователей Telegram-бота <b>@Ghost_Face_VPN_bot</b> (сервис <b>GhostFaceVPN</b>).</p>
 
     <h2>1. Состав обрабатываемых данных</h2>
-    <p>Для автоматизированного предоставления доступа к цифровому сервису в Telegram-боте @Ghost_Face_VPN_bot обрабатывается только минимально необходимый набор технических данных:</p>
+    <p>Для автоматизированного предоставления доступа к цифровому сервису в Telegram-боте @Ghost_Face_VPN_bot обрабатывается только строго минимальный набор технических данных:</p>
     <ul>
       <li>Уникальный числовой идентификатор аккаунта Telegram (Telegram ID);</li>
       <li>Публичное имя пользователя в Telegram (@username и отображаемое имя профиля, если указаны);</li>
@@ -399,7 +399,6 @@ async def webapp_me(
 
     sub = user.subscription
     plans = await repo.get_active_plans()
-    vouchers = await repo.get_user_gift_vouchers(user.id, limit=20)
     extra_devs = sub.extra_devices if sub else 0
     unified_sub_url = build_subscription_url(sub.sub_id, server=sub.server) if sub else ""
 
@@ -431,17 +430,7 @@ async def webapp_me(
             }
             for p in plans
         ],
-        "gifts": [
-            {
-                "code": v.code,
-                "days": v.days,
-                "days_label": v.days_label,
-                "status": v.status.value,
-                "deep_link": v.deep_link,
-                "share_url": build_gift_voucher_share_url(v.code),
-            }
-            for v in vouchers
-        ],
+        "gifts": [],
     }
 
 

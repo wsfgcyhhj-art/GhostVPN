@@ -11,7 +11,6 @@ from app.bot.keyboards.user import (
     main_menu_kb,
     manage_slots_kb,
     mobile_boost_kb,
-    my_gifts_kb,
     referral_kb,
     reissue_confirm_kb,
     subscription_card_kb,
@@ -137,7 +136,7 @@ async def cb_help_mobile_boost(
         "• <b>🇳🇱 GhostFaceVPN • Резервный</b>\n\n"
         "💡 <b>Как обновить параметры подключения:</b>\n"
         "1. Открой приложение (Happ / v2rayTun / Hiddify) и нажми <b>«🔄» (обновить подписку)</b>.\n"
-        "2. При необходимости переключись в списке серверов между профилями <b>«🇳🇱 GhostFaceVPN • Основной»</b> и <b>«🇳🇱 GhostFaceVPN • Резервный»</b>."
+        "2. При смене сети переключись в списке серверов между профилями <b>«🇳🇱 GhostFaceVPN • Основной»</b> и <b>«🇳🇱 GhostFaceVPN • Резервный»</b>."
     )
     await send_or_edit_banner(
         callback,
@@ -520,85 +519,4 @@ async def msg_promo_redeem(
         repo=repo,
     )
 
-
-@router.callback_query(F.data == "gift:my")
-async def cb_my_gifts(
-    callback: CallbackQuery,
-    repo: Repository,
-    db_user: User,
-) -> None:
-    vouchers = await repo.get_user_gift_vouchers(db_user.id, limit=20)
-    if not vouchers:
-        text = (
-            "🎁 <b>Мои подарки</b>\n\n"
-            "У тебя пока нет купленных подарочных подписок.\n"
-            "Ты можешь подарить другу подписку на 1, 3, 6 или 12 месяцев — "
-            "после оплаты бот сразу выдаст красивую ссылку-подарок в 1 клик!"
-        )
-    else:
-        lines = ["🎁 <b>Мои подарки (купленные сертификаты)</b>\n"]
-        for v in vouchers:
-            if v.status == GiftVoucherStatus.ACTIVE:
-                lines.append(
-                    f"🟢 <b>Готов к отправке ({v.days_label}, {v.limit_ip_label})</b>\n"
-                    f"🔗 <code>{v.deep_link}</code>\n"
-                )
-            else:
-                red_dt = format_dt_msk(v.redeemed_at) if v.redeemed_at else "—"
-                lines.append(
-                    f"✅ <b>Активирован ({v.days_label})</b> — код <code>{v.code}</code> ({red_dt})\n"
-                )
-        lines.append(
-            "\n<i>💡 Неиспользованный подарок можно отправить другу кнопкой ниже "
-            "или активировать на свой собственный аккаунт!</i>"
-        )
-        text = "\n".join(lines)
-
-    await send_or_edit_banner(
-        callback,
-        banner_key="referral",
-        caption=text,
-        reply_markup=my_gifts_kb(vouchers, db_user.language),
-        lang=db_user.language,
-        repo=repo,
-    )
-    await callback.answer()
-
-
-@router.callback_query(F.data.startswith("gift:redeem_self:"))
-async def cb_gift_redeem_self(
-    callback: CallbackQuery,
-    bot: Bot,
-    session: AsyncSession,
-    repo: Repository,
-    db_user: User,
-) -> None:
-    code = (callback.data or "").split(":", 2)[2]
-    vpn_service = VPNService(session)
-    try:
-        voucher, sub = await vpn_service.redeem_gift_voucher(
-            user=db_user,
-            raw_code=code,
-            bot=bot,
-        )
-    except ValueError as exc:
-        await callback.answer(str(exc), show_alert=True)
-        return
-    except Exception as exc:
-        await callback.answer(f"Ошибка активации подарка: {exc}", show_alert=True)
-        return
-
-    card = await format_subscription_card(sub, user=db_user)
-    await send_or_edit_banner(
-        callback,
-        banner_key="profile",
-        caption=(
-            f"🎉 <b>Подарочный сертификат ({voucher.days_label}) успешно активирован на твой аккаунт!</b>\n\n"
-            f"{card}"
-        ),
-        reply_markup=subscription_card_kb(db_user, sub),
-        lang=db_user.language,
-        repo=repo,
-    )
-    await callback.answer("Подарок активирован!")
 

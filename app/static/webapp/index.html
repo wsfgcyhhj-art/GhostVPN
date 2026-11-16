@@ -274,7 +274,7 @@
     <div id="mobileHelpBox" style="display:none;margin-top:8px;padding:10px 12px;background:var(--bg-card-alt);border:1px solid var(--border-hud);border-radius:10px;font-size:11.5px;color:var(--text-muted);line-height:1.45;">
       ⚙️ <b style="color:var(--ghost-white);">Инструкция по подключению:</b> высокоскоростное защищённое соединение для комфортной работы и стриминга доступно из любой точки мира. Твоя единая подписка включает профили <b>🇳🇱 GhostFaceVPN • Основной</b> и <b>🇳🇱 GhostFaceVPN • Резервный</b>:
       <br/>1) Нажми <b>«🔄» (обновить подписку)</b> внутри приложения;
-      <br/>2) При необходимости переключись в списке серверов между <b>«🇳🇱 GhostFaceVPN • Основной»</b> и <b>«🇳🇱 GhostFaceVPN • Резервный»</b>.
+      <br/>2) При смене сети переключись в списке серверов между <b>«🇳🇱 GhostFaceVPN • Основной»</b> и <b>«🇳🇱 GhostFaceVPN • Резервный»</b>.
     </div>
   </div>
 
@@ -294,16 +294,6 @@
       </select>
     </div>
     <div id="plansContainer">Загрузка тарифов...</div>
-  </div>
-
-  <!-- Подарить подписку другу и Мои подарки -->
-  <div class="card">
-    <div class="card-title">🎁 Подарить подписку другу</div>
-    <p style="font-size:12px;color:var(--text-muted);margin:0 0 10px;">
-      Выбери тариф в подарок — после оплаты ты получишь одноразовую подарочную ссылку в 1 клик!
-    </p>
-    <div id="giftPlansContainer">Загрузка подарков...</div>
-    <div id="myGiftsContainer" style="margin-top:10px;"></div>
   </div>
 
   <!-- Автопродление и Рефералка -->
@@ -405,7 +395,7 @@
       el.style.display = el.style.display === "none" ? "block" : "none";
     }
 
-    async function buyPlan(planId, isGift = false) {
+    async function buyPlan(planId) {
       const provider = document.getElementById("payProvider").value;
       const initData = tg ? tg.initData : "";
       try {
@@ -415,16 +405,11 @@
             "Content-Type": "application/json",
             "X-Telegram-Init-Data": initData
           },
-          body: JSON.stringify({ plan_id: planId, provider: provider, is_gift: Boolean(isGift) })
+          body: JSON.stringify({ plan_id: planId, provider: provider })
         });
         const data = await resp.json();
         if (!resp.ok) {
           showToast(data.detail || "Ошибка создания счёта");
-          return;
-        }
-        if (data.gift) {
-          showToast("🎁 Подарок создан!");
-          loadDashboard();
           return;
         }
         if (data.payment_url) {
@@ -494,76 +479,6 @@
           row.appendChild(buyBtn);
           container.appendChild(row);
         });
-
-        const giftContainer = document.getElementById("giftPlansContainer");
-        if (giftContainer) {
-          giftContainer.textContent = "";
-          (data.plans || []).forEach(p => {
-            const gRow = document.createElement("div");
-            gRow.className = "plan-item";
-
-            const gInfo = document.createElement("div");
-            const gName = document.createElement("div");
-            gName.className = "plan-name";
-            gName.textContent = `🎁 В подарок: ${p.name}`;
-
-            const gMeta = document.createElement("div");
-            gMeta.className = "plan-meta";
-            gMeta.textContent = `${p.days} дней • Ссылка для друга`;
-
-            gInfo.appendChild(gName);
-            gInfo.appendChild(gMeta);
-
-            const gBtn = document.createElement("button");
-            gBtn.className = "plan-buy";
-            gBtn.type = "button";
-            gBtn.textContent = `🎁 ${p.base_price_rub || p.price_rub} ₽`;
-            gBtn.addEventListener("click", () => buyPlan(Number(p.id), true));
-
-            gRow.appendChild(gInfo);
-            gRow.appendChild(gBtn);
-            giftContainer.appendChild(gRow);
-          });
-        }
-
-        const myGiftsEl = document.getElementById("myGiftsContainer");
-        if (myGiftsEl) {
-          myGiftsEl.textContent = "";
-          (data.gifts || []).forEach(g => {
-            const box = document.createElement("div");
-            box.className = "plan-item";
-            box.style.marginTop = "6px";
-
-            const left = document.createElement("div");
-            const title = document.createElement("div");
-            title.className = "plan-name";
-            title.textContent = g.status === "active"
-              ? `🟢 Подарок (${g.days_label})`
-              : `✅ Активирован (${g.days_label})`;
-            const subTxt = document.createElement("div");
-            subTxt.className = "plan-meta";
-            subTxt.textContent = g.deep_link;
-            left.appendChild(title);
-            left.appendChild(subTxt);
-            box.appendChild(left);
-
-            if (g.status === "active" && g.share_url) {
-              const sendBtn = document.createElement("button");
-              sendBtn.className = "plan-buy";
-              sendBtn.type = "button";
-              sendBtn.textContent = "📨 Отправить";
-              sendBtn.addEventListener("click", () => {
-                if (tg && tg.openTelegramLink) {
-                  tg.openTelegramLink(g.share_url);
-                } else {
-                  window.open(g.share_url, "_blank");
-                }
-              });
-              box.appendChild(sendBtn);
-            }
-            myGiftsEl.appendChild(box);
-          });
-        }
       } catch (e) {
         document.getElementById("subStatusText").textContent = "Ошибка загрузки профиля";
       }

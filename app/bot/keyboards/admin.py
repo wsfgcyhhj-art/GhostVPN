@@ -20,7 +20,9 @@ def admin_home_kb() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="🎟 Промокоды", callback_data="admin:promos"),
     )
     b.row(
-        InlineKeyboardButton(text="🎁 Подарить подписку", callback_data="admin:gift_menu"),
+        InlineKeyboardButton(
+            text="👑 Выдать подписку по @username", callback_data="admin:grant_menu"
+        ),
         InlineKeyboardButton(
             text="🎁 Начислить дни всем активным", callback_data="admin:mass_compensate"
         ),
@@ -129,6 +131,57 @@ def admin_broadcast_confirm_kb() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="🚀 Запустить рассылку", callback_data="admin:bc_run"),
         InlineKeyboardButton(text="❌ Отмена", callback_data="admin:home"),
     )
+    return b.as_markup()
+
+
+def admin_grant_days_kb() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(
+        InlineKeyboardButton(text="7 дней", callback_data="admin:grant_days:7"),
+        InlineKeyboardButton(text="30 дней (1 мес.)", callback_data="admin:grant_days:30"),
+    )
+    b.row(
+        InlineKeyboardButton(text="90 дней (3 мес.)", callback_data="admin:grant_days:90"),
+        InlineKeyboardButton(text="180 дней (6 мес.)", callback_data="admin:grant_days:180"),
+    )
+    b.row(
+        InlineKeyboardButton(text="365 дней (1 год)", callback_data="admin:grant_days:365"),
+    )
+    b.row(
+        InlineKeyboardButton(
+            text="♾ Безлимит навсегда (50 лет, без лимита устройств)",
+            callback_data="admin:grant_days:18250",
+        )
+    )
+    b.row(
+        InlineKeyboardButton(
+            text="✏️ Ввести своё число дней",
+            callback_data="admin:grant_days:custom",
+        )
+    )
+    b.row(InlineKeyboardButton(text="⬅️ Отмена", callback_data="admin:home"))
+    return b.as_markup()
+
+
+def admin_grant_limit_kb(days: int) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(
+        InlineKeyboardButton(
+            text="📱 3 устройства (стандарт)",
+            callback_data=f"admin:grant_lim:{days}:3",
+        ),
+        InlineKeyboardButton(
+            text="📱 5 устройств",
+            callback_data=f"admin:grant_lim:{days}:5",
+        ),
+    )
+    b.row(
+        InlineKeyboardButton(
+            text="♾ Без лимита устройств (0)",
+            callback_data=f"admin:grant_lim:{days}:0",
+        )
+    )
+    b.row(InlineKeyboardButton(text="⬅️ Отмена", callback_data="admin:home"))
     return b.as_markup()
 
 

@@ -78,12 +78,6 @@ def main_menu_kb(user: User, is_admin: bool = False) -> InlineKeyboardMarkup:
     )
     b.row(
         InlineKeyboardButton(
-            text=t("btn_gift_sub_friend", lang),
-            callback_data="gift:plans",
-        )
-    )
-    b.row(
-        InlineKeyboardButton(
             text=t("btn_ref", lang, percent=settings.REFERRAL_PERCENT),
             callback_data="profile:ref",
         ),
@@ -184,16 +178,6 @@ def subscription_card_kb(user: User, sub: Subscription | None) -> InlineKeyboard
             )
     b.row(
         InlineKeyboardButton(
-            text=t("btn_gift_sub_friend", lang),
-            callback_data="gift:plans",
-        ),
-        InlineKeyboardButton(
-            text=t("btn_my_gifts", lang),
-            callback_data="gift:my",
-        ),
-    )
-    b.row(
-        InlineKeyboardButton(
             text=t("btn_gift_friend", lang),
             url=build_friend_share_url(user.telegram_id),
         )
@@ -289,12 +273,6 @@ def plans_list_kb(
         b.row(InlineKeyboardButton(text=label, callback_data=f"plan:select:{plan.id}"))
     if extra_devices > 0:
         b.row(InlineKeyboardButton(text="🎛 Управлять слотами", callback_data="devices:manage"))
-    b.row(
-        InlineKeyboardButton(
-            text=t("btn_gift_sub_friend", lang),
-            callback_data="gift:plans",
-        )
-    )
     b.row(InlineKeyboardButton(text="🎟 Ввести промокод", callback_data="promo:enter"))
     b.row(InlineKeyboardButton(text=t("btn_back_menu", lang), callback_data="menu:home"))
     return b.as_markup()
@@ -555,17 +533,33 @@ def referral_kb(user: User) -> InlineKeyboardMarkup:
             url=build_friend_share_url(user.telegram_id),
         )
     )
+    b.row(InlineKeyboardButton(text=t("btn_back_menu", lang), callback_data="menu:home"))
+    return b.as_markup()
+
+
+def admin_granted_subscription_kb(sub: Subscription, lang: str = "ru") -> InlineKeyboardMarkup:
+    base_web = settings.WEBHOOK_BASE_URL.rstrip("/")
+    b = InlineKeyboardBuilder()
     b.row(
         InlineKeyboardButton(
-            text=t("btn_gift_sub_friend", lang),
-            callback_data="gift:plans",
+            text="📲 Подключиться в 1 клик",
+            url=f"{base_web}/connect/happ/{sub.sub_id}",
+        )
+    )
+    b.row(
+        InlineKeyboardButton(
+            text="📲 v2rayTun",
+            url=f"{base_web}/connect/v2raytun/{sub.sub_id}",
         ),
         InlineKeyboardButton(
-            text=t("btn_my_gifts", lang),
-            callback_data="gift:my",
+            text="📲 Hiddify",
+            url=f"{base_web}/connect/hiddify/{sub.sub_id}",
         ),
     )
-    b.row(InlineKeyboardButton(text=t("btn_back_menu", lang), callback_data="menu:home"))
+    b.row(
+        InlineKeyboardButton(text="🔑 Личный кабинет", callback_data="profile:sub"),
+        InlineKeyboardButton(text="📋 Главное меню", callback_data="menu:home"),
+    )
     return b.as_markup()
 
 

@@ -377,3 +377,31 @@ class GiftVoucher(Base):
         return f"https://t.me/{bot_username}?start=gift_{self.code}"
 
 
+class PendingUsernameGift(Base):
+    __tablename__ = "pending_username_gifts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    days: Mapped[int] = mapped_column(Integer, nullable=False)
+    limit_ip: Mapped[int] = mapped_column(
+        Integer, default=settings.DEFAULT_LIMIT_IP, nullable=False
+    )
+    granted_by_admin_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    is_claimed: Mapped[bool] = mapped_column(Boolean, default=False, index=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+    @property
+    def is_unlimited_days(self) -> bool:
+        return self.days == 0 or self.days >= 18250
+
+    @property
+    def days_label(self) -> str:
+        return "♾ Безлимит навсегда" if self.is_unlimited_days else f"{self.days} дн."
+
+    @property
+    def limit_ip_label(self) -> str:
+        return "♾ Безлимит устройств" if self.limit_ip == 0 else f"{self.limit_ip} устр."
+
+

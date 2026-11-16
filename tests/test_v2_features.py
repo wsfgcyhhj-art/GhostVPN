@@ -212,7 +212,7 @@ async def test_webapp_initdata_auth_freshness_and_mobile_fragment_security(
         assert resp_pay.status_code == 200
         assert "payment_url" in resp_pay.json()
 
-        # 5. Эндпоинт обхода мобильных глушилок /sub/mobile/{sub_id}
+        # 5. Эндпоинт мобильного подключения /sub/mobile/{sub_id}
         resp_mob = await client.get(f"/sub/mobile/{sub.sub_id}")
         assert resp_mob.status_code == 200
         mob_data = resp_mob.json()
@@ -616,142 +616,246 @@ async def test_dual_reality_inbounds_sync_and_mobile_multiprofile_formats(
 async def test_gift_subscriptions_admin_and_user_flows(
     db_session: AsyncSession,
 ) -> None:
-    from urllib.parse import unquote
-
-    from app.bot.handlers.admin import _execute_admin_direct_gift
-    from app.bot.keyboards.user import GIFT_VOUCHER_SHARE_TEXT, build_gift_voucher_share_url
-    from app.db.models import GiftVoucherStatus
+    from app.bot.handlers.admin import _execute_admin_grant
+    from app.bot.keyboards.user import (
+        admin_granted_subscription_kb,
+        main_menu_kb,
+        plans_list_kb,
+        referral_kb,
+        subscription_card_kb,
+    )
 
     repo = Repository(db_session)
     mock_xui = AsyncMock(spec=XUIClient)
     vpn = VPNService(db_session, xui_client_override=mock_xui)
     mock_bot = AsyncMock()
 
-    # 1. Прямой безлимитный подарок от админа (days=0 -> >=18250, limit_ip=0) новому пользователю
-    admin_user, _ = await repo.get_or_create_user(telegram_id=900001, username="boss_admin")
-    unregistered_user, _ = await repo.get_or_create_user(telegram_id=900002, username="lucky_target")
+    # 1. Проверяем, что в интерфейсе обычных пользователей нет кнопок подарков
+    user_test, _ = await repo.get_or_create_user(telegram_id=900010, username="regular_user")
+    plans = await repo.get_active_plans()
+
+    # main_menu_kb
+    main_kb = main_menu_kb(user_test, is_admin=False)
+    for row in main_kb.inline_keyboard:
+        for btn in row:
+            assert btn.callback_data != "gift:plans"
+            assert "🎁 Подарить подписку" not in (btn.text or "")
+            assert "🎁 Мои подарки" not in (btn.text or "")
+
+    # referral_kb
+    ref_kb = referral_kb(user_test)
+    for row in ref_kb.inline_keyboard:
+        for btn in row:
+            assert btn.callback_data != "gift:plans"
+            assert btn.callback_data != "gift:my"
+            assert "🎁 Подарить подписку" not in (btn.text or "")
+            assert "🎁 Мои подарки" not in (btn.text or "")
+
+    # plans_list_kb
+    plans_kb = plans_list_kb(plans)
+    for row in plans_kb.inline_keyboard:
+        for btn in row:
+            assert btn.callback_data != "gift:plans"
+
+    # subscription_card_kb
+    sub_dummy = await vpn.grant_or_extend_subscription(user=user_test, days=7, is_trial=True)
+    card_kb = subscription_card_kb(user_test, sub_dummy)
+    for row in card_kb.inline_keyboard:
+        for btn in row:
+            assert btn.callback_data != "gift:plans"
+            assert btn.callback_data != "gift:my"
+
+    # 2. Выдача подписки существующему пользователю по @username
+    admin_u, _ = await repo.get_or_create_user(telegram_id=900001, username="admin_master")
+    target_existing, _ = await repo.get_or_create_user(telegram_id=900002, username="durov_friend")
+
     with patch("app.bot.handlers.admin.VPNService", return_value=vpn):
-        target_u, admin_sub, notified = await _execute_admin_direct_gift(
+        report = await _execute_admin_grant(
             bot=mock_bot,
             session=db_session,
             repo=repo,
-            admin_tg_id=admin_user.telegram_id,
-            target_user_id=unregistered_user.id,
-            days=0,
+            admin_tg_id=admin_u.telegram_id,
+            target_user_id=target_existing.id,
+            target_username="durov_friend",
+            target_tg_id=target_existing.telegram_id,
+            days=30,
+            limit_ip=3,
+        )
+
+    assert "Полноценная подписка успешно активирована" in report
+    assert "Уведомление с кнопкой подключения успешно доставлено" in report
+
+    # Проверяем отправленное сообщение в ЛС
+    mock_bot.send_message.assert_awaited()
+    sent_call = mock_bot.send_message.await_args_list[-1]
+    assert sent_call.kwargs["chat_id"] == target_existing.telegram_id
+    assert "Вам выдана полноценная подписка GhostFaceVPN!" in sent_call.kwargs["text"]
+    assert "30 дн." in sent_call.kwargs["text"]
+    # Проверяем кнопку подключения
+    kb_sent = sent_call.kwargs["reply_markup"]
+    assert kb_sent.inline_keyboard[0][0].text == "📲 Подключиться в 1 клик"
+
+    # Проверяем подписку в БД
+    await db_session.refresh(target_existing, attribute_names=["subscription"])
+    sub_ext = target_existing.subscription
+    assert sub_ext is not None
+    assert sub_ext.is_trial is False
+    assert sub_ext.is_active is True
+    assert sub_ext.limit_ip == 3
+    assert 29 <= sub_ext.days_left <= 31
+
+    # 3. Выдача подписки новому пользователю, которого ещё нет в базе (отложенная выдача)
+    mock_bot.send_message.reset_mock()
+    pending_username = "future_vip_customer"
+    report_pending = await _execute_admin_grant(
+        bot=mock_bot,
+        session=db_session,
+        repo=repo,
+        admin_tg_id=admin_u.telegram_id,
+        target_user_id=None,
+        target_username=pending_username,
+        target_tg_id=None,
+        days=90,
+        limit_ip=5,
+    )
+    assert "Подписка успешно подготовлена для @future_vip_customer" in report_pending
+    assert "В базу добавлена отложенная выдача" in report_pending
+
+    # Проверяем запись в pending_username_gifts
+    unclaimed = await repo.get_unclaimed_pending_gifts_by_username(pending_username)
+    assert len(unclaimed) == 1
+    p_gift = unclaimed[0]
+    assert p_gift.username == pending_username
+    assert p_gift.days == 90
+    assert p_gift.limit_ip == 5
+    assert p_gift.is_claimed is False
+
+    # Пользователь впервые нажимает /start
+    new_vip_user, _ = await repo.get_or_create_user(telegram_id=900003, username=pending_username)
+    # Имитация логики /start:
+    unclaimed_start = await repo.get_unclaimed_pending_gifts_by_username(new_vip_user.username)
+    assert len(unclaimed_start) == 1
+    activated_sub = await vpn.grant_or_extend_subscription(
+        user=new_vip_user,
+        days=unclaimed_start[0].days,
+        limit_ip=unclaimed_start[0].limit_ip,
+        is_trial=False,
+    )
+    await repo.mark_pending_gift_claimed(unclaimed_start[0].id)
+
+    assert activated_sub.is_trial is False
+    assert activated_sub.is_active is True
+    assert activated_sub.limit_ip == 5
+    assert 89 <= activated_sub.days_left <= 91
+
+    # Проверяем, что подарок теперь помечен claimed
+    unclaimed_after = await repo.get_unclaimed_pending_gifts_by_username(pending_username)
+    assert len(unclaimed_after) == 0
+
+    # 4. Выдача безлимитной подписки навсегда (days=18250, limit_ip=0)
+    mock_bot.send_message.reset_mock()
+    with patch("app.bot.handlers.admin.VPNService", return_value=vpn):
+        report_unlim = await _execute_admin_grant(
+            bot=mock_bot,
+            session=db_session,
+            repo=repo,
+            admin_tg_id=admin_u.telegram_id,
+            target_user_id=target_existing.id,
+            target_username=target_existing.username,
+            target_tg_id=target_existing.telegram_id,
+            days=18250,
             limit_ip=0,
         )
-    assert notified is True
-    assert admin_sub.limit_ip == 0
-    assert admin_sub.days_left >= 18250
-    assert mock_xui.add_client.await_args_list[-1].kwargs["limit_ip"] == 0
+    assert "Безлимит навсегда" in report_unlim
+    unlim_msg = mock_bot.send_message.await_args_list[-1]
+    assert "Вам выдана безлимитная подписка GhostFaceVPN!" in unlim_msg.kwargs["text"]
+    assert "без ограничений по времени, скорости и количеству устройств" in unlim_msg.kwargs["text"]
 
-    # 2. Одноразовая ссылка от админа (90 дней, безлимит устройств = 0)
-    admin_link_voucher = await repo.create_gift_voucher(
-        creator_user_id=admin_user.id,
-        days=90,
-        limit_ip=0,
-        is_admin_gift=True,
-        status=GiftVoucherStatus.ACTIVE,
-    )
-    assert admin_link_voucher.status == GiftVoucherStatus.ACTIVE
-    assert admin_link_voucher.deep_link.endswith(f"?start=gift_{admin_link_voucher.code}")
+    await db_session.refresh(target_existing, attribute_names=["subscription"])
+    assert target_existing.subscription.limit_ip == 0
+    assert target_existing.subscription.days_left >= 18000
 
-    # 3. Покупка подарочной подписки обычным пользователем + реферальные 15% его пригласившему
-    inviter, _ = await repo.get_or_create_user(telegram_id=900010, username="inviter_pro")
-    buyer, _ = await repo.get_or_create_user(
-        telegram_id=900011,
-        username="generous_buyer",
-        referrer_telegram_id=inviter.telegram_id,
-    )
-    plans = await repo.get_active_plans()
-    gift_plan = plans[0]  # 1 месяц (179 ₽, 30 дней)
 
-    await repo.create_gift_voucher(
-        creator_user_id=buyer.id,
-        days=gift_plan.days,
-        limit_ip=gift_plan.limit_ip,
-        is_admin_gift=False,
-        status=GiftVoucherStatus.PENDING_PAYMENT,
-    )
-    tx_gift = Transaction(
-        user_id=buyer.id,
-        plan_id=gift_plan.id,
-        tx_type=TransactionType.GIFT_SUBSCRIPTION,
-        provider=PaymentProviderType.RUB_GATEWAY,
-        currency="RUB",
-        amount_currency=gift_plan.price_rub,
-        amount_rub=gift_plan.price_rub,
-        balance_used_rub=Decimal("0.00"),
-        status=TransactionStatus.PENDING,
-    )
-    db_session.add(tx_gift)
-    await db_session.commit()
-    await db_session.refresh(tx_gift)
+@pytest.mark.asyncio
+async def test_start_handler_pending_and_precreated_grants(
+    db_session: AsyncSession,
+) -> None:
+    from aiogram.filters.command import CommandObject
+    from app.bot.handlers.start import cmd_start
 
-    ok, _ = await vpn.process_successful_payment(tx_gift, bot=mock_bot)
-    assert ok is True
-    user_voucher = vpn.last_gift_voucher
-    assert user_voucher is not None
-    assert user_voucher.status == GiftVoucherStatus.ACTIVE
-    assert user_voucher.days == gift_plan.days
-    assert user_voucher.is_admin_gift is False
+    repo = Repository(db_session)
+    mock_xui = AsyncMock(spec=XUIClient)
+    vpn = VPNService(db_session, xui_client_override=mock_xui)
+    mock_bot = AsyncMock()
 
-    # Проверяем, что рефереру покупателя начислено 15% за покупку подарка
-    await db_session.refresh(inviter)
-    expected_ref_bonus = (
-        Decimal(str(gift_plan.price_rub)) * Decimal(settings.REFERRAL_PERCENT) / Decimal(100)
-    ).quantize(Decimal("0.01"))
-    assert inviter.balance_rub == expected_ref_bonus
-
-    # Проверяем ссылку пересылки подарка другу
-    gift_share = build_gift_voucher_share_url(user_voucher.code)
-    assert gift_share.startswith("https://t.me/share/url?url=")
-    assert unquote(gift_share).endswith(GIFT_VOUCHER_SHARE_TEXT)
-
-    # 4. Активация пользовательского подарка новым другом:
-    # привязка реферала (referrer_id = buyer.id), создание подписки в 3X-UI и уведомление дарителю
-    mock_bot.send_message.reset_mock()
-    friend_user, is_new = await repo.get_or_create_user(
-        telegram_id=900012,
-        username="new_friend",
-        referrer_user_id=user_voucher.creator_user_id,
-    )
-    assert is_new is True
-    assert friend_user.referrer_id == buyer.id
-
-    redeemed_v, friend_sub = await vpn.redeem_gift_voucher(
-        user=friend_user,
-        raw_code=f"gift_{user_voucher.code}",
-        bot=mock_bot,
-    )
-    assert redeemed_v.status == GiftVoucherStatus.REDEEMED
-    assert redeemed_v.redeemed_by_user_id == friend_user.id
-    assert redeemed_v.redeemed_at is not None
-    assert friend_sub.is_currently_valid is True
-    assert 29 <= friend_sub.days_left <= 31
-    orig_uuid = friend_sub.xui_client_uuid
-    orig_sub_id = friend_sub.sub_id
-
-    # Дарителю ушло уведомление об активации подарка
-    assert any(
-        c.kwargs.get("chat_id") == buyer.telegram_id
-        and "Ваш друг активировал подаренную подписку" in c.kwargs.get("text", "")
-        for c in mock_bot.send_message.await_args_list
+    # 1. Тест: у пользователя есть отложенная подписка (PendingUsernameGift). Он нажимает /start
+    target_uname = "alice_crypto"
+    await repo.create_pending_username_gift(
+        username=target_uname,
+        days=60,
+        limit_ip=3,
+        granted_by_admin_id=900001,
     )
 
-    # Повторная активация того же кода отклоняется
-    with pytest.raises(ValueError, match="уже был активирован"):
-        await vpn.redeem_gift_voucher(user=friend_user, raw_code=user_voucher.code)
+    fake_msg = AsyncMock()
+    fake_msg.from_user = AsyncMock()
+    fake_msg.from_user.id = 900088
+    fake_msg.from_user.username = "Alice_Crypto"
+    fake_msg.from_user.full_name = "Alice In Crypto"
+    fake_msg.from_user.language_code = "ru"
+    fake_msg.bot = mock_bot
+    fake_msg.answer = AsyncMock()
+    fake_command = CommandObject(prefix="/", command="start", args="")
+    mock_state = AsyncMock()
 
-    # 5. Активация второго подарка (от админа на 90 дней, 0 = безлимит устр.) тем же пользователем:
-    # дни прибавляются к текущему expires_at, старая ссылка и UUID сохраняются!
-    _, extended_sub = await vpn.redeem_gift_voucher(
-        user=friend_user,
-        raw_code=admin_link_voucher.code,
-        bot=mock_bot,
-    )
-    assert extended_sub.xui_client_uuid == orig_uuid
-    assert extended_sub.sub_id == orig_sub_id
-    assert extended_sub.limit_ip == 0
-    assert 119 <= extended_sub.days_left <= 122
+    with patch("app.bot.handlers.start.VPNService", return_value=vpn), \
+         patch("app.bot.handlers.start.send_or_edit_banner", new_callable=AsyncMock) as mock_send_banner:
+        await cmd_start(
+            message=fake_msg,
+            command=fake_command,
+            bot=mock_bot,
+            session=db_session,
+            repo=repo,
+            state=mock_state,
+        )
+
+        mock_send_banner.assert_awaited_once()
+        caption = mock_send_banner.await_args.kwargs["caption"]
+        assert "Вам выдана полноценная подписка GhostFaceVPN!" in caption
+        assert "60 дн." in caption
+
+    # Проверяем, что подписка активирована в БД и помечена как claimed
+    unclaimed = await repo.get_unclaimed_pending_gifts_by_username(target_uname)
+    assert len(unclaimed) == 0
+
+    user_alice = await repo.get_user_by_tg_id(900088)
+    assert user_alice is not None
+    assert user_alice.subscription is not None
+    assert user_alice.subscription.is_active is True
+    assert user_alice.subscription.is_trial is False
+    assert 59 <= user_alice.subscription.days_left <= 61
+
+    # 2. Тест: пользователь уже создан заранее с активной подпиской и нажимает /start
+    fake_msg.from_user.id = 900099
+    fake_msg.from_user.username = "bob_precreated"
+    fake_msg.from_user.full_name = "Bob Precreated"
+    user_bob, _ = await repo.get_or_create_user(telegram_id=900099, username="bob_precreated")
+    await vpn.grant_or_extend_subscription(user=user_bob, days=18250, limit_ip=0, is_trial=False)
+
+    with patch("app.bot.handlers.start.VPNService", return_value=vpn), \
+         patch("app.bot.handlers.start.send_or_edit_banner", new_callable=AsyncMock) as mock_send_banner:
+        await cmd_start(
+            message=fake_msg,
+            command=fake_command,
+            bot=mock_bot,
+            session=db_session,
+            repo=repo,
+            state=mock_state,
+        )
+
+        mock_send_banner.assert_awaited_once()
+        caption = mock_send_banner.await_args.kwargs["caption"]
+        assert "Вам выдана безлимитная подписка GhostFaceVPN!" in caption
+        assert "без ограничений по времени, скорости и количеству устройств" in caption
+
 

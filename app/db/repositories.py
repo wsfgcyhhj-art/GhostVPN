@@ -14,6 +14,7 @@ from app.db.models import (
     GiftVoucherStatus,
     MediaCache,
     PaymentProviderType,
+    PendingUsernameGift,
     Plan,
     PromoCode,
     PromoType,
@@ -144,6 +145,15 @@ class Repository:
                     Subscription.xui_email == q,
                 )
             )
+        )
+        return res.scalar_one_or_none()
+
+    async def find_user_by_username(self, username: str) -> User | None:
+        clean_user = username.lstrip("@").strip().lower()
+        if not clean_user:
+            return None
+        res = await self.session.execute(
+            select(User).where(func.lower(User.username) == clean_user)
         )
         return res.scalar_one_or_none()
 
@@ -509,4 +519,54 @@ class Repository:
             .limit(limit)
         )
         return res.scalars().all()
+
+    # --- Pending Username Gifts ---
+    async def create_pending_username_gift(
+        self,
+        *,
+        username: str,
+        days: int,
+        limit_ip: int = 3,
+        granted_by_admin_id: int,
+    ) -> PendingUsernameGift:
+        clean_user = username.lstrip("@").strip().lower()
+        gift = PendingUsernameGift(
+            username=clean_user,
+            days=days,
+            limit_ip=limit_ip,
+            granted_by_admin_id=granted_by_admin_id,
+            is_claimed=False,
+        )
+        self.session.add(gift)
+        await self.session.commit()
+        await self.session.refresh(gift)
+        return gift
+
+    async def get_unclaimed_pending_gifts_by_username(
+        self, username: str
+    ) -> Sequence[PendingUsernameGift]:
+        clean_user = username.lstrip("@").strip().lower()
+        if not clean_user:
+            return []
+        res = await self.session.execute(
+            select(PendingUsernameGift)
+            .where(
+                func.lower(PendingUsernameGift.username) == clean_user,
+                PendingUsernameGift.is_claimed == False,
+            )
+            .order_by(PendingUsernameGift.id.asc())
+        )
+        return res.scalars().all()
+
+    async def mark_pending_gift_claimed(self, gift_id: int) -> PendingUsernameGift | None:
+        res = await self.session.execute(
+            select(PendingUsernameGift).where(PendingUsernameGift.id == gift_id)
+        )
+        gift = res.scalar_one_or_none()
+        if gift:
+            gift.is_claimed = True
+            await self.session.commit()
+            await self.session.refresh(gift)
+        return gift
+
 

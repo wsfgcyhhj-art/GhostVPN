@@ -10,12 +10,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.bot.handlers.profile import format_subscription_card
 from app.bot.keyboards.user import (
     about_service_kb,
+    admin_granted_subscription_kb,
     faq_menu_kb,
     instructions_kb,
     main_menu_kb,
     subscription_card_kb,
 )
-from app.bot.utils import send_or_edit_banner
+from app.bot.utils import format_dt_msk, send_or_edit_banner
 from app.core.config import settings
 from app.core.i18n import t
 from app.db.models import GiftVoucherStatus, User
@@ -80,7 +81,7 @@ async def cmd_start(
             ):
                 ref_user_id = voucher_preview.creator_user_id
 
-    user, _ = await repo.get_or_create_user(
+    user, created_now = await repo.get_or_create_user(
         telegram_id=tg_user.id,
         username=tg_user.username,
         full_name=tg_user.full_name,
@@ -89,6 +90,84 @@ async def cmd_start(
         referrer_user_id=ref_user_id,
     )
     is_admin = tg_user.id in settings.ADMIN_IDS
+
+    # 1. Проверяем наличие отложенных подписок, выданных администратором по @username
+    if tg_user.username:
+        clean_username = tg_user.username.lstrip("@").strip().lower()
+        pending_grants = await repo.get_unclaimed_pending_gifts_by_username(clean_username)
+        if pending_grants:
+            vpn_service = VPNService(session)
+            last_sub = None
+            total_days = 0
+            for grant in pending_grants:
+                total_days += grant.days
+                last_sub = await vpn_service.grant_or_extend_subscription(
+                    user=user,
+                    days=grant.days,
+                    limit_ip=grant.limit_ip,
+                    is_trial=False,
+                )
+                await repo.mark_pending_gift_claimed(grant.id)
+
+            if last_sub is not None:
+                is_unlimited = (last_sub.limit_ip == 0 or total_days >= 18250 or last_sub.days_left >= 18000)
+                if is_unlimited:
+                    grant_msg = (
+                        "👑 <b>Вам выдана безлимитная подписка GhostFaceVPN!</b>\n\n"
+                        "Администратор активировал для вас максимальный доступ без ограничений по времени, скорости и количеству устройств.\n\n"
+                        f"📋 <b>Ваша ссылка подписки:</b>\n<code>{last_sub.subscription_url}</code>\n\n"
+                        "Нажмите кнопку ниже, чтобы подключиться в 1 клик 👇"
+                    )
+                else:
+                    expiry_date_str = format_dt_msk(last_sub.expires_at)
+                    limit_text = "♾ Без ограничений" if last_sub.limit_ip == 0 else f"{last_sub.limit_ip} устр."
+                    grant_msg = (
+                        "🎉 <b>Вам выдана полноценная подписка GhostFaceVPN!</b>\n\n"
+                        f"Администратор активировал для вас доступ на <b>{total_days} дн.</b> (до <b>{expiry_date_str} МСК</b>).\n"
+                        f"📱 Лимит устройств: <b>{limit_text}</b>\n\n"
+                        f"📋 <b>Ваша ссылка подписки:</b>\n<code>{last_sub.subscription_url}</code>\n\n"
+                        "Нажмите кнопку ниже, чтобы подключиться в 1 клик 👇"
+                    )
+                await send_or_edit_banner(
+                    message,
+                    banner_key="profile",
+                    caption=grant_msg,
+                    reply_markup=admin_granted_subscription_kb(last_sub, user.language),
+                    lang=user.language,
+                    repo=repo,
+                )
+                return
+
+    # 2. Если пользователь уже был создан админом заранее и у него есть активная подписка
+    if user.subscription and user.subscription.is_active and not user.subscription.is_trial:
+        sub = user.subscription
+        is_unlimited = (sub.limit_ip == 0 or sub.days_left >= 18000)
+        if is_unlimited:
+            admin_sub_msg = (
+                "👑 <b>Вам выдана безлимитная подписка GhostFaceVPN!</b>\n\n"
+                "Администратор активировал для вас максимальный доступ без ограничений по времени, скорости и количеству устройств.\n\n"
+                f"📋 <b>Ваша ссылка подписки:</b>\n<code>{sub.subscription_url}</code>\n\n"
+                "Нажмите кнопку ниже, чтобы подключиться в 1 клик 👇"
+            )
+        else:
+            expiry_date_str = format_dt_msk(sub.expires_at)
+            limit_text = "♾ Без ограничений" if sub.limit_ip == 0 else f"{sub.limit_ip} устр."
+            admin_sub_msg = (
+                "🎉 <b>Вам выдана полноценная подписка GhostFaceVPN!</b>\n\n"
+                f"Администратор активировал для вас доступ (до <b>{expiry_date_str} МСК</b>).\n"
+                f"📱 Лимит устройств: <b>{limit_text}</b>\n\n"
+                f"📋 <b>Ваша ссылка подписки:</b>\n<code>{sub.subscription_url}</code>\n\n"
+                "Нажмите кнопку ниже, чтобы подключиться в 1 клик 👇"
+            )
+        await send_or_edit_banner(
+            message,
+            banner_key="profile",
+            caption=admin_sub_msg,
+            reply_markup=admin_granted_subscription_kb(sub, user.language),
+            lang=user.language,
+            repo=repo,
+        )
+        return
 
     if gift_code:
         vpn_service = VPNService(session)

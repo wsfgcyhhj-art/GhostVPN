@@ -38,3 +38,9 @@ class AdminGiftState(StatesGroup):
     waiting_for_direct_custom_days = State()
     waiting_for_link_custom_days = State()
 
+
+class AdminGrantState(StatesGroup):
+    waiting_for_recipient = State()
+    waiting_for_custom_days = State()
+
+
