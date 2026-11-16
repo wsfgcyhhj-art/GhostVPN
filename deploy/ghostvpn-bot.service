@@ -1,0 +1,30 @@
+[Unit]
+Description=GhostVPN Telegram Bot & FastAPI Backend (Ghostface Edition)
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/ghostvpn
+EnvironmentFile=/opt/ghostvpn/.env
+
+# Автоматическое применение миграций базы данных перед запуском
+ExecStartPre=/opt/ghostvpn/.venv/bin/alembic upgrade head
+
+# Запуск ASGI-сервера на локальном порту 127.0.0.1:8000
+ExecStart=/opt/ghostvpn/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000 --workers 1
+
+# Автоматический перезапуск при падении или перезагрузке
+Restart=always
+RestartSec=5
+
+# Ограничения ресурсов и системные дескрипторы
+LimitNOFILE=65535
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ghostvpn-bot
+
+[Install]
+WantedBy=multi-user.target

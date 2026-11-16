@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import html
 import json
 from contextlib import asynccontextmanager
@@ -180,18 +181,46 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     scheduler = create_scheduler(bot)
     scheduler.start()
 
-    webhook_url = f"{settings.WEBHOOK_BASE_URL.rstrip('/')}/webhook/telegram"
-    try:
-        await bot.set_webhook(
-            url=webhook_url,
-            secret_token=settings.WEBHOOK_SECRET,
-            drop_pending_updates=False,
-        )
-        logger.info("Telegram Webhook установлен: %s", webhook_url)
-    except Exception as exc:
-        logger.warning("Не удалось установить Telegram Webhook при старте: %s", exc)
+    polling_task: asyncio.Task[None] | None = None
+    has_webhook = bool(
+        settings.WEBHOOK_BASE_URL
+        and settings.WEBHOOK_BASE_URL.strip().lower() not in ("", "none", "null")
+    )
+
+    if has_webhook:
+        webhook_url = f"{settings.WEBHOOK_BASE_URL.rstrip('/')}/webhook/telegram"
+        try:
+            await bot.set_webhook(
+                url=webhook_url,
+                secret_token=settings.WEBHOOK_SECRET,
+                drop_pending_updates=False,
+            )
+            logger.info("Telegram Webhook установлен: %s", webhook_url)
+        except Exception as exc:
+            logger.warning("Не удалось установить Telegram Webhook при старте: %s", exc)
+    else:
+        try:
+            await bot.delete_webhook(drop_pending_updates=False)
+            logger.info("WEBHOOK_BASE_URL не задан — Telegram Webhook удалён")
+        except Exception as exc:
+            logger.warning("Не удалось удалить вебхук: %s", exc)
+
+        try:
+            polling_task = asyncio.create_task(
+                dp.start_polling(bot, handle_signals=False)
+            )
+            logger.info("Бот запущен в режиме long-polling (запасной вариант)")
+        except Exception as exc:
+            logger.warning("Не удалось запустить long-polling: %s", exc)
 
     yield
+
+    if polling_task is not None:
+        polling_task.cancel()
+        try:
+            await polling_task
+        except (asyncio.CancelledError, Exception):
+            pass
 
     scheduler.shutdown(wait=False)
     try:

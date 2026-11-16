@@ -4,7 +4,7 @@ import hashlib
 import hmac
 import json
 from decimal import Decimal
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -212,3 +212,59 @@ async def test_web_endpoints_health_deep_links_and_webhooks(
         assert tx_fk.external_id == "fk_555444"
 
     app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_vps_deployment_settings_and_polling_fallback() -> None:
+    from app.core.config import Settings
+    from app.services.xui.client import XUIClient
+    from app.web.app import lifespan
+
+    # 1. Проверяем корректную поддержку локального 3X-UI и XUI_VERIFY_SSL=False
+    vps_settings = Settings(
+        XUI_HOST="https://127.0.0.1:2053",
+        XUI_VERIFY_SSL="false",
+        WEBHOOK_BASE_URL="",
+    )
+    assert vps_settings.XUI_HOST == "https://127.0.0.1:2053"
+    assert vps_settings.XUI_VERIFY_SSL is False
+    assert vps_settings.WEBHOOK_BASE_URL == ""
+
+    client = XUIClient(
+        host="https://127.0.0.1:2053",
+        web_base_path="/sub",
+        username="admin",
+        password="pwd",
+        verify_ssl=False,
+    )
+    assert client.verify_ssl is False
+    await client.close()
+
+    # 2. Проверяем переключение lifespan в режим polling при пустом WEBHOOK_BASE_URL
+    with patch("app.web.app.settings.WEBHOOK_BASE_URL", ""), \
+         patch("app.web.app.init_db_with_retry", new_callable=AsyncMock), \
+         patch("app.web.app.bot.delete_webhook", new_callable=AsyncMock) as mock_del_wh, \
+         patch("app.web.app.bot.set_webhook", new_callable=AsyncMock) as mock_set_wh, \
+         patch("app.web.app.dp.start_polling", new_callable=AsyncMock), \
+         patch("app.web.app.create_scheduler") as mock_sched:
+        mock_sched.return_value.start = MagicMock()
+        mock_sched.return_value.shutdown = MagicMock()
+
+        async with lifespan(app):
+            mock_del_wh.assert_awaited_once()
+            mock_set_wh.assert_not_awaited()
+
+    # 3. Проверяем установку вебхука при заданном WEBHOOK_BASE_URL
+    with patch("app.web.app.settings.WEBHOOK_BASE_URL", "https://ghostfacevpn.duckdns.org:8443"), \
+         patch("app.web.app.init_db_with_retry", new_callable=AsyncMock), \
+         patch("app.web.app.bot.delete_webhook", new_callable=AsyncMock), \
+         patch("app.web.app.bot.set_webhook", new_callable=AsyncMock) as mock_set_wh, \
+         patch("app.web.app.dp.start_polling", new_callable=AsyncMock), \
+         patch("app.web.app.create_scheduler") as mock_sched:
+        mock_sched.return_value.start = MagicMock()
+        mock_sched.return_value.shutdown = MagicMock()
+
+        async with lifespan(app):
+            mock_set_wh.assert_awaited_once()
+            assert "https://ghostfacevpn.duckdns.org:8443/webhook/telegram" in mock_set_wh.await_args.kwargs["url"]
+
