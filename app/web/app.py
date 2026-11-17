@@ -14,8 +14,9 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Res
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from sqlalchemy import select, text
+from sqlalchemy import inspect, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.bot.handlers.billing import format_gift_created_message
 from app.bot.handlers.profile import format_subscription_card
@@ -620,7 +621,12 @@ async def get_mobile_fragment_subscription(
     if sub is None:
         raise HTTPException(status_code=404, detail="Subscription not found")
 
-    user = sub.user or await session.get(User, sub.user_id)
+    insp = inspect(sub)
+    if "user" in insp.dict and sub.user is not None:
+        user = sub.user
+    else:
+        user = await session.get(User, sub.user_id) if sub.user_id else None
+
     if (user and user.is_banned) or not sub.is_currently_valid:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -903,14 +909,24 @@ async def connect_deep_link(
     if sub is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subscription not found")
 
-    user = sub.user or await session.get(User, sub.user_id)
+    insp = inspect(sub)
+    if "user" in insp.dict and sub.user is not None:
+        user = sub.user
+    else:
+        user = await session.get(User, sub.user_id) if sub.user_id else None
+
     if (user and user.is_banned) or not sub.is_currently_valid:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Subscription is inactive or user is banned",
         )
 
-    sub_url = build_subscription_url(sub.sub_id, server=sub.server)
+    if "server" in insp.dict and sub.server is not None:
+        server = sub.server
+    else:
+        server = await session.get(Server, sub.server_id) if sub.server_id else None
+
+    sub_url = build_subscription_url(sub.sub_id, server=server)
 
     app_title, scheme_tpl = DEEP_LINK_SCHEMES[app_key]
     deep_link = scheme_tpl.format(sub_url=sub_url)

@@ -18,6 +18,7 @@ from aiogram.types import (
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.bot.handlers.profile import format_subscription_card
 from app.bot.keyboards.user import invoice_check_kb, subscription_card_kb
@@ -114,6 +115,7 @@ async def check_expiring_and_expired_subscriptions(bot: Bot | None = None) -> di
             # 0. Автопродление за 12 часов до истечения
             ar_res = await session.execute(
                 select(Subscription)
+                .options(selectinload(Subscription.user), selectinload(Subscription.server))
                 .join(User, User.id == Subscription.user_id)
                 .where(
                     Subscription.is_active.is_(True),
@@ -225,6 +227,7 @@ async def check_expiring_and_expired_subscriptions(bot: Bot | None = None) -> di
             # 1. Истекшие подписки
             exp_res = await session.execute(
                 select(Subscription)
+                .options(selectinload(Subscription.user), selectinload(Subscription.server))
                 .join(User, User.id == Subscription.user_id)
                 .where(
                     Subscription.expires_at <= now,
@@ -263,7 +266,9 @@ async def check_expiring_and_expired_subscriptions(bot: Bot | None = None) -> di
 
             # 2. Осталось менее 24 часов
             res_1d = await session.execute(
-                select(Subscription).where(
+                select(Subscription)
+                .options(selectinload(Subscription.user), selectinload(Subscription.server))
+                .where(
                     Subscription.is_active.is_(True),
                     Subscription.expires_at > now,
                     Subscription.expires_at <= in_24h,
@@ -294,7 +299,9 @@ async def check_expiring_and_expired_subscriptions(bot: Bot | None = None) -> di
 
             # 3. Осталось менее 3 дней (но более 24 часов)
             res_3d = await session.execute(
-                select(Subscription).where(
+                select(Subscription)
+                .options(selectinload(Subscription.user), selectinload(Subscription.server))
+                .where(
                     Subscription.is_active.is_(True),
                     Subscription.expires_at > in_24h,
                     Subscription.expires_at <= in_3d,
@@ -488,7 +495,9 @@ async def run_retention_onboarding_and_winback(bot: Bot | None = None) -> dict[s
 
             # 1. Онбординг-помощник (0 байт трафика спустя 6 часов)
             onb_res = await session.execute(
-                select(Subscription).where(
+                select(Subscription)
+                .options(selectinload(Subscription.user), selectinload(Subscription.server))
+                .where(
                     Subscription.is_active.is_(True),
                     Subscription.expires_at > now,
                     Subscription.started_at <= six_hours_ago,
@@ -545,7 +554,9 @@ async def run_retention_onboarding_and_winback(bot: Bot | None = None) -> dict[s
 
             # 2. Win-back: подписка истекла >= 3 дней назад
             wb_res = await session.execute(
-                select(Subscription).where(
+                select(Subscription)
+                .options(selectinload(Subscription.user), selectinload(Subscription.server))
+                .where(
                     Subscription.expires_at <= three_days_ago,
                     Subscription.notified_winback.is_(False),
                 )
@@ -623,7 +634,9 @@ async def cleanup_stale_xui_clients() -> int:
                 return 0
 
             res = await session.execute(
-                select(Subscription).where(
+                select(Subscription)
+                .options(selectinload(Subscription.user), selectinload(Subscription.server))
+                .where(
                     Subscription.expires_at <= cutoff,
                     Subscription.deleted_from_xui.is_(False),
                 )

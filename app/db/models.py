@@ -173,7 +173,7 @@ class Subscription(Base):
         DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
     )
 
-    user: Mapped["User"] = relationship("User", back_populates="subscription")
+    user: Mapped["User"] = relationship("User", back_populates="subscription", lazy="selectin")
     server: Mapped["Server"] = relationship("Server", back_populates="subscriptions", lazy="selectin")
 
     @property

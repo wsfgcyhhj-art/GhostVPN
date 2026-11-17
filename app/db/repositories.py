@@ -8,6 +8,7 @@ from typing import Any, Sequence
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.db.models import (
     GiftVoucher,
@@ -216,7 +217,12 @@ class Repository:
     # --- Subscriptions ---
     async def get_subscription_by_sub_id(self, sub_id: str) -> Subscription | None:
         res = await self.session.execute(
-            select(Subscription).where(Subscription.sub_id == sub_id)
+            select(Subscription)
+            .options(
+                selectinload(Subscription.user),
+                selectinload(Subscription.server),
+            )
+            .where(Subscription.sub_id == sub_id)
         )
         return res.scalar_one_or_none()
 
@@ -287,7 +293,12 @@ class Repository:
     async def get_all_active_subscriptions(self) -> Sequence[Subscription]:
         now = utcnow()
         res = await self.session.execute(
-            select(Subscription).where(
+            select(Subscription)
+            .options(
+                selectinload(Subscription.user),
+                selectinload(Subscription.server),
+            )
+            .where(
                 Subscription.is_active.is_(True),
                 Subscription.expires_at > now,
             )

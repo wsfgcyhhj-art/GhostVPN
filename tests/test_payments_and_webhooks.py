@@ -268,3 +268,77 @@ async def test_vps_deployment_settings_and_polling_fallback() -> None:
             mock_set_wh.assert_awaited_once()
             assert "https://ghostfacevpn.duckdns.org:8443/webhook/telegram" in mock_set_wh.await_args.kwargs["url"]
 
+
+@pytest.mark.asyncio
+async def test_sub_mobile_endpoint_no_missing_greenlet(db_session: AsyncSession) -> None:
+    from datetime import timedelta
+    from app.db.models import Server, Subscription, User, utcnow
+    from app.services.vpn import VPNService
+
+    # 1. Создаем пользователя, сервер и подписку
+    user = User(
+        telegram_id=987654321,
+        username="greenlet_user",
+        full_name="Greenlet Test",
+        language="ru",
+        is_banned=False,
+    )
+    db_session.add(user)
+    server = Server(
+        name="Test NL",
+        host="https://nl.example.com",
+        web_base_path="/sub",
+        username="admin",
+        password="pwd",
+        sub_base_url="https://nl.example.com/sub",
+        inbound_id=1,
+    )
+    db_session.add(server)
+    await db_session.commit()
+    await db_session.refresh(user)
+    await db_session.refresh(server)
+
+    sub = Subscription(
+        user_id=user.id,
+        server_id=server.id,
+        xui_client_uuid="uuid-greenlet-test",
+        xui_email="tg_987654321",
+        sub_id="greenlettestsub123",
+        limit_ip=3,
+        expires_at=utcnow() + timedelta(days=30),
+        is_active=True,
+    )
+    db_session.add(sub)
+    await db_session.commit()
+
+    test_sub_id = sub.sub_id
+    repo = Repository(db_session)
+    # Имитируем сброс кэша / истечение атрибутов после коммита (expire_all)
+    db_session.expire_all()
+
+    # 2. Вызываем GET /sub/mobile/{sub_id} через AsyncClient
+    app.dependency_overrides[get_db_session] = lambda: db_session
+    mock_xui = AsyncMock(spec=XUIClient)
+    mock_xui.get_inbound_reality_info = AsyncMock(return_value=None)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        with patch("app.services.vpn.XUIClient.from_server", return_value=mock_xui), \
+             patch("app.services.vpn.VPNService._make_xui_client", return_value=mock_xui):
+            resp = await client.get(f"/sub/mobile/{test_sub_id}")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert "profiles" in data
+
+    # 3. Проверяем прямой вызов fetch_live_mobile_profile на объекте
+    refreshed_sub = await repo.get_subscription_by_sub_id(test_sub_id)
+    assert refreshed_sub is not None
+    vpn_service = VPNService(db_session)
+    with patch.object(vpn_service, "_make_xui_client", return_value=mock_xui):
+        profile = await vpn_service.fetch_live_mobile_profile(refreshed_sub)
+        assert profile is not None
+        assert "profiles" in profile
+
+    app.dependency_overrides.clear()
+
+

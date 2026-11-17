@@ -9,8 +9,9 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote, urlparse
 
-from sqlalchemy import select
+from sqlalchemy import inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
 from app.core.logging import logger, send_admin_alert
@@ -733,6 +734,32 @@ class VPNService:
                 exc,
             )
 
+    async def _safe_get_subscription_server(self, sub: Subscription) -> Server:
+        """Безопасное получение связанного сервера без триггера lazy loading."""
+        insp = inspect(sub)
+        if "server" in insp.dict and sub.server is not None:
+            return sub.server
+        if sub.server_id:
+            server = await self.session.get(Server, sub.server_id)
+            if server is not None:
+                sub.server = server
+                return server
+        server = await self._get_server()
+        sub.server = server
+        return server
+
+    async def _safe_get_subscription_user(self, sub: Subscription) -> User | None:
+        """Безопасное получение связанного пользователя без триггера lazy loading."""
+        insp = inspect(sub)
+        if "user" in insp.dict and sub.user is not None:
+            return sub.user
+        if sub.user_id:
+            user = await self.session.get(User, sub.user_id)
+            if user is not None:
+                sub.user = user
+                return user
+        return None
+
     async def fetch_live_mobile_profile(self, sub: Subscription) -> dict[str, Any]:
         """
         Запрашивает реальные настройки `serverNames` (SNI), `publicKey`, `shortId`, `port`
@@ -741,8 +768,9 @@ class VPNService:
         автоматически добавляет его туда с текущими `uuid`, `subId`, `email`, `limitIp` и `expiryTime`,
         после чего возвращает мульти-профиль с европейскими узлами «🇪🇺 Европа • Узел 1..N».
         """
-        server = sub.server or await self._get_server()
-        user = sub.user or await self.session.get(User, sub.user_id)
+        server = await self._safe_get_subscription_server(sub)
+        user = await self._safe_get_subscription_user(sub)
+
         should_sync_missing = bool(sub.is_currently_valid and not (user and user.is_banned))
         tg_id_str = str(user.telegram_id) if user else ""
         expiry_ms = datetime_to_ms(sub.expires_at)
@@ -809,7 +837,9 @@ class VPNService:
         eff_limit_ip = settings.DEFAULT_LIMIT_IP if limit_ip is None else limit_ip
 
         res = await self.session.execute(
-            select(Subscription).where(Subscription.user_id == user.id)
+            select(Subscription)
+            .options(selectinload(Subscription.user), selectinload(Subscription.server))
+            .where(Subscription.user_id == user.id)
         )
         sub = res.scalar_one_or_none()
 
@@ -864,11 +894,13 @@ class VPNService:
                 user.has_used_trial = True
             await self.session.commit()
             await self.session.refresh(sub)
+            sub.user = user
+            sub.server = server
             await self.session.refresh(user, attribute_names=["subscription"])
             return sub
 
         # Продление существующей подписки (сохраняем старый subId и uuid!)
-        server = sub.server or await self._get_server()
+        server = await self._safe_get_subscription_server(sub)
         was_expired = not sub.is_currently_valid
         new_expires_at = calculate_new_expiry(sub.expires_at, eff_days, now=now)
         is_still_active = new_expires_at > now
@@ -931,12 +963,16 @@ class VPNService:
 
         await self.session.commit()
         await self.session.refresh(sub)
+        sub.user = user
+        sub.server = server
         return sub
 
     async def add_extra_device_slot(self, user: User, slots: int = 1) -> Subscription:
         """Увеличивает `limit_ip` в БД и во всех активных инбаундах 3X-UI."""
         res = await self.session.execute(
-            select(Subscription).where(Subscription.user_id == user.id)
+            select(Subscription)
+            .options(selectinload(Subscription.user), selectinload(Subscription.server))
+            .where(Subscription.user_id == user.id)
         )
         sub = res.scalar_one_or_none()
         if sub is None:
@@ -946,7 +982,7 @@ class VPNService:
         if new_limit > settings.MAX_LIMIT_IP or new_limit < 1:
             raise ValueError(f"Лимит устройств должен быть от 1 до {settings.MAX_LIMIT_IP}.")
 
-        server = sub.server or await self._get_server()
+        server = await self._safe_get_subscription_server(sub)
         client = self._make_xui_client(server)
         try:
             await self._sync_update_client_all_inbounds(
@@ -969,6 +1005,8 @@ class VPNService:
         sub.ip_violations_count = 0
         await self.session.commit()
         await self.session.refresh(sub)
+        sub.user = user
+        sub.server = server
         return sub
 
     async def reduce_extra_device_slots(
@@ -978,7 +1016,9 @@ class VPNService:
         Уменьшает количество дополнительных слотов в БД и синхронно в обоих инбаундах 3X-UI.
         """
         res = await self.session.execute(
-            select(Subscription).where(Subscription.user_id == user.id)
+            select(Subscription)
+            .options(selectinload(Subscription.user), selectinload(Subscription.server))
+            .where(Subscription.user_id == user.id)
         )
         sub = res.scalar_one_or_none()
         if sub is None:
@@ -987,7 +1027,7 @@ class VPNService:
         safe_extra = max(0, min(target_extra_devices, sub.extra_devices))
         new_limit = settings.DEFAULT_LIMIT_IP + safe_extra
 
-        server = sub.server or await self._get_server()
+        server = await self._safe_get_subscription_server(sub)
         client = self._make_xui_client(server)
         try:
             await self._sync_update_client_all_inbounds(
@@ -1009,6 +1049,8 @@ class VPNService:
         sub.limit_ip = new_limit
         await self.session.commit()
         await self.session.refresh(sub)
+        sub.user = user
+        sub.server = server
         return sub
 
     async def reissue_key(self, user: User, *, force_by_admin: bool = False) -> Subscription:
@@ -1017,7 +1059,9 @@ class VPNService:
         с сохранением текущего срока действия `expires_at`.
         """
         res = await self.session.execute(
-            select(Subscription).where(Subscription.user_id == user.id)
+            select(Subscription)
+            .options(selectinload(Subscription.user), selectinload(Subscription.server))
+            .where(Subscription.user_id == user.id)
         )
         sub = res.scalar_one_or_none()
         if sub is None:
@@ -1039,7 +1083,7 @@ class VPNService:
                     f"Попробуйте снова примерно через {hours_left} ч."
                 )
 
-        server = sub.server or await self._get_server()
+        server = await self._safe_get_subscription_server(sub)
         old_uuid = sub.xui_client_uuid
         new_uuid = str(uuid.uuid4())
         new_sub_id = generate_sub_id(16)
@@ -1074,12 +1118,17 @@ class VPNService:
         sub.deleted_from_xui = False
         await self.session.commit()
         await self.session.refresh(sub)
+        sub.user = user
+        sub.server = server
         return sub
 
     async def set_client_enabled(self, sub: Subscription, enabled: bool) -> None:
-        server = sub.server or await self._get_server()
-        user_res = await self.session.execute(select(User).where(User.id == sub.user_id))
-        user = user_res.scalar_one()
+        server = await self._safe_get_subscription_server(sub)
+        user = await self._safe_get_subscription_user(sub)
+        if user is None:
+            user_res = await self.session.execute(select(User).where(User.id == sub.user_id))
+            user = user_res.scalar_one()
+            sub.user = user
 
         client = self._make_xui_client(server)
         try:
@@ -1100,6 +1149,9 @@ class VPNService:
 
         sub.is_active = enabled
         await self.session.commit()
+        await self.session.refresh(sub)
+        sub.user = user
+        sub.server = server
 
     async def process_successful_payment(
         self,
@@ -1116,7 +1168,9 @@ class VPNService:
 
         if tx.status == TransactionStatus.COMPLETED:
             res = await self.session.execute(
-                select(Subscription).where(Subscription.user_id == tx.user_id)
+                select(Subscription)
+                .options(selectinload(Subscription.user), selectinload(Subscription.server))
+                .where(Subscription.user_id == tx.user_id)
             )
             return True, res.scalar_one_or_none()
 
@@ -1140,7 +1194,9 @@ class VPNService:
             tx.paid_at = utcnow()
             await self.session.commit()
             res = await self.session.execute(
-                select(Subscription).where(Subscription.user_id == user.id)
+                select(Subscription)
+                .options(selectinload(Subscription.user), selectinload(Subscription.server))
+                .where(Subscription.user_id == user.id)
             )
             return True, res.scalar_one_or_none()
 
@@ -1241,7 +1297,12 @@ class VPNService:
                 await self.session.commit()
                 await self.session.refresh(voucher)
                 self.last_gift_voucher = voucher
-                return True, user.subscription
+                sub_res = await self.session.execute(
+                    select(Subscription)
+                    .options(selectinload(Subscription.user), selectinload(Subscription.server))
+                    .where(Subscription.user_id == user.id)
+                )
+                return True, sub_res.scalar_one_or_none()
             if tx.tx_type == TransactionType.EXTRA_DEVICE:
                 sub = await self.add_extra_device_slot(
                     user=user, slots=max(1, tx.extra_devices_qty or 1)
@@ -1329,6 +1390,8 @@ class VPNService:
         await self.session.commit()
         await self.session.refresh(voucher)
         await self.session.refresh(sub)
+        sub.user = user
+        sub.server = await self._safe_get_subscription_server(sub)
 
         if bot and voucher.creator_user_id and voucher.creator_user_id != user.id:
             creator = await self.session.get(User, voucher.creator_user_id)
