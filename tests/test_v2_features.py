@@ -234,8 +234,18 @@ async def test_webapp_initdata_auth_freshness_and_mobile_fragment_security(
 @pytest.mark.asyncio
 async def test_trial_race_condition_and_stale_banner_file_id_recovery(
     db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(settings, "XUI_INBOUND_ID", 1)
+    monkeypatch.setattr(settings, "XUI_MOBILE_INBOUND_ID", None)
+    monkeypatch.setattr(settings, "XUI_EXTRA_INBOUND_IDS", "")
+
     repo = Repository(db_session)
+    server = await repo.get_active_server()
+    if server is not None:
+        server.inbound_id = 1
+        await db_session.commit()
+
     user, _ = await repo.get_or_create_user(telegram_id=700999, username="trial_racer")
     mock_xui = AsyncMock(spec=XUIClient)
     vpn = VPNService(db_session, xui_client_override=mock_xui)
@@ -360,6 +370,7 @@ async def test_workers_ip_violation_retention_cleanup_and_backup(
 @pytest.mark.asyncio
 async def test_dual_reality_inbounds_sync_and_mobile_multiprofile_formats(
     db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import base64
     from urllib.parse import unquote
@@ -370,14 +381,16 @@ async def test_dual_reality_inbounds_sync_and_mobile_multiprofile_formats(
     app.dependency_overrides[get_db_session] = override_get_db
     transport = ASGITransport(app=app)
 
-    old_mob_id = settings.XUI_MOBILE_INBOUND_ID
-    old_extra_ids = settings.XUI_EXTRA_INBOUND_IDS
-    object.__setattr__(settings, "XUI_MOBILE_INBOUND_ID", 2)
-    object.__setattr__(settings, "XUI_EXTRA_INBOUND_IDS", "2,3,4,5")
+    monkeypatch.setattr(settings, "XUI_INBOUND_ID", 1)
+    monkeypatch.setattr(settings, "XUI_MOBILE_INBOUND_ID", 2)
+    monkeypatch.setattr(settings, "XUI_EXTRA_INBOUND_IDS", "2,3,4,5")
 
     try:
         repo = Repository(db_session)
         server = await repo.get_active_server()
+        assert server is not None
+        server.inbound_id = 1
+        await db_session.commit()
         assert get_target_inbound_ids(server) == [1, 2, 3, 4, 5]
 
         user, _ = await repo.get_or_create_user(telegram_id=910500, username="lte_dual_user")
@@ -607,8 +620,6 @@ async def test_dual_reality_inbounds_sync_and_mobile_multiprofile_formats(
                 finally:
                     object.__setattr__(settings, "WEBHOOK_BASE_URL", old_wh)
     finally:
-        object.__setattr__(settings, "XUI_MOBILE_INBOUND_ID", old_mob_id)
-        object.__setattr__(settings, "XUI_EXTRA_INBOUND_IDS", old_extra_ids)
         app.dependency_overrides.clear()
 
 

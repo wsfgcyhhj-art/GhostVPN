@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.handlers.billing import calculate_checkout_amounts
+from app.core.config import settings
 from app.services.qr_card import generate_branded_qr_card
 from app.db.models import (
     PaymentProviderType,
@@ -37,8 +38,20 @@ def test_calculate_new_expiry_active_vs_expired() -> None:
 
 
 @pytest.mark.asyncio
-async def test_grant_extend_and_reissue_cooldown(db_session: AsyncSession) -> None:
+async def test_grant_extend_and_reissue_cooldown(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "XUI_INBOUND_ID", 1)
+    monkeypatch.setattr(settings, "XUI_MOBILE_INBOUND_ID", None)
+    monkeypatch.setattr(settings, "XUI_EXTRA_INBOUND_IDS", "")
+
     repo = Repository(db_session)
+    server = await repo.get_active_server()
+    if server is not None:
+        server.inbound_id = 1
+        await db_session.commit()
+
     user, _ = await repo.get_or_create_user(telegram_id=555001, username="tester")
 
     mock_xui = AsyncMock(spec=XUIClient)
