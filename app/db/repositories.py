@@ -7,6 +7,7 @@ from decimal import Decimal
 from typing import Any, Sequence
 
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -49,6 +50,25 @@ class Repository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
+    async def _resolve_referrer_id(
+        self,
+        telegram_id: int,
+        referrer_telegram_id: int | None,
+        referrer_user_id: int | None,
+    ) -> int | None:
+        if referrer_user_id:
+            ref_user_by_id = await self.session.get(User, referrer_user_id)
+            if ref_user_by_id and ref_user_by_id.telegram_id != telegram_id:
+                return ref_user_by_id.id
+        elif referrer_telegram_id and referrer_telegram_id != telegram_id:
+            ref_res = await self.session.execute(
+                select(User).where(User.telegram_id == referrer_telegram_id)
+            )
+            ref_user = ref_res.scalar_one_or_none()
+            if ref_user:
+                return ref_user.id
+        return None
+
     # --- Users ---
     async def get_or_create_user(
         self,
@@ -86,22 +106,29 @@ class Repository:
             if full_name and user.full_name != full_name:
                 user.full_name = full_name
                 changed = True
+            if (
+                user.referrer_id is None
+                and user.subscription is None
+                and not user.has_used_trial
+                and (referrer_user_id or referrer_telegram_id)
+            ):
+                created_at = user.created_at
+                if created_at and created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=timezone.utc)
+                if created_at and (utcnow() - created_at) < timedelta(seconds=60):
+                    resolved_ref = await self._resolve_referrer_id(
+                        telegram_id, referrer_telegram_id, referrer_user_id
+                    )
+                    if resolved_ref:
+                        user.referrer_id = resolved_ref
+                        changed = True
             if changed:
                 await self.session.commit()
             return user, False
 
-        referrer_db_id: int | None = None
-        if referrer_user_id:
-            ref_user_by_id = await self.session.get(User, referrer_user_id)
-            if ref_user_by_id and ref_user_by_id.telegram_id != telegram_id:
-                referrer_db_id = ref_user_by_id.id
-        elif referrer_telegram_id and referrer_telegram_id != telegram_id:
-            ref_res = await self.session.execute(
-                select(User).where(User.telegram_id == referrer_telegram_id)
-            )
-            ref_user = ref_res.scalar_one_or_none()
-            if ref_user:
-                referrer_db_id = ref_user.id
+        referrer_db_id = await self._resolve_referrer_id(
+            telegram_id, referrer_telegram_id, referrer_user_id
+        )
 
         user = User(
             telegram_id=telegram_id,
@@ -113,7 +140,15 @@ class Repository:
             auto_renew=True,
         )
         self.session.add(user)
-        await self.session.commit()
+        try:
+            await self.session.commit()
+        except IntegrityError:
+            await self.session.rollback()
+            existing_res = await self.session.execute(
+                select(User).where(User.telegram_id == telegram_id)
+            )
+            existing = existing_res.scalar_one()
+            return existing, False
         await self.session.refresh(user)
         return user, True
 
@@ -316,7 +351,9 @@ class Repository:
         """
         code = raw_code.strip().upper()
         res = await self.session.execute(
-            select(PromoCode).where(func.upper(PromoCode.code) == code, PromoCode.is_active.is_(True))
+            select(PromoCode)
+            .where(func.upper(PromoCode.code) == code, PromoCode.is_active.is_(True))
+            .with_for_update()
         )
         promo = res.scalar_one_or_none()
         if promo is None:
@@ -351,11 +388,16 @@ class Repository:
 
         if promo.type == PromoType.PERCENT:
             user.pending_discount_percent = max(user.pending_discount_percent, promo.value)
-            await self.session.commit()
-            return promo, f"Скидка {promo.value}% активирована и применится при следующей покупке!"
+            msg_out = f"Скидка {promo.value}% активирована и применится при следующей покупке!"
+        else:
+            msg_out = f"Начислено +{promo.value} бонусных дней к подписке!"
 
-        await self.session.commit()
-        return promo, f"Начислено +{promo.value} бонусных дней к подписке!"
+        try:
+            await self.session.commit()
+        except IntegrityError as exc:
+            await self.session.rollback()
+            raise ValueError("Вы уже активировали этот промокод ранее.") from exc
+        return promo, msg_out
 
     # --- Admin Dashboard Stats (Multi-currency & Trial Conversion) ---
     async def get_dashboard_stats(self) -> dict[str, Any]:

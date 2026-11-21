@@ -5,7 +5,7 @@ import json
 import secrets
 import zipfile
 from contextlib import asynccontextmanager
-from datetime import timedelta
+from datetime import timedelta, timezone
 from decimal import Decimal
 from typing import Any, AsyncGenerator
 
@@ -40,7 +40,7 @@ from app.db.models import (
 from app.db.repositories import Repository
 from app.db.session import async_session_factory
 from app.services.payments.rub_gateway import FreeKassaProvider
-from app.services.vpn import VPNService, calculate_plan_renewal_price_with_slots
+from app.services.vpn import VPNService, calculate_plan_renewal_price_with_slots, datetime_to_ms
 from app.services.xui.client import XUIClient
 
 LOCK_ID_EXPIRY_CHECK = 900101
@@ -379,15 +379,18 @@ async def sync_xui_traffic_and_enforce_ip_limits(bot: Bot | None = None) -> dict
                         sub.ip_violations_count += 1
                         user = await session.get(User, sub.user_id)
                         if sub.ip_violations_count >= 3:
+                            exp_aware = (
+                                sub.expires_at
+                                if sub.expires_at.tzinfo
+                                else sub.expires_at.replace(tzinfo=timezone.utc)
+                            )
                             await VPNService._sync_update_client_all_inbounds(
                                 client,
                                 server,
                                 client_uuid=sub.xui_client_uuid,
                                 email=sub.xui_email,
                                 sub_id=sub.sub_id,
-                                expiry_time_ms=int(now.timestamp() * 1000)
-                                if sub.expires_at <= now
-                                else int(sub.expires_at.timestamp() * 1000),
+                                expiry_time_ms=datetime_to_ms(now if exp_aware <= now else exp_aware),
                                 limit_ip=sub.limit_ip,
                                 enable=False,
                                 tg_id=str(user.telegram_id if user else ""),

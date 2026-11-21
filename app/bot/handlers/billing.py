@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.bot.handlers.profile import format_subscription_card
 from app.bot.keyboards.user import (
     back_to_menu_kb,
+    gift_created_kb,
     invoice_check_kb,
     payment_methods_kb,
     plans_list_kb,

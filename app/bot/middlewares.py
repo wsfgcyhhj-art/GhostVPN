@@ -64,10 +64,25 @@ class DatabaseAndUserMiddleware(BaseMiddleware):
             data["repo"] = repo
 
             if tg_user is not None:
+                ref_tg_id: int | None = None
+                msg_obj: Message | None = None
+                if isinstance(event, Message):
+                    msg_obj = event
+                elif hasattr(event, "message") and isinstance(getattr(event, "message", None), Message):
+                    msg_obj = getattr(event, "message")
+
+                if msg_obj is not None and msg_obj.text and msg_obj.text.startswith("/start "):
+                    start_arg = msg_obj.text.split(None, 1)[1].strip()
+                    if start_arg.startswith("ref_"):
+                        raw_ref = start_arg.replace("ref_", "", 1)
+                        if raw_ref.isdigit():
+                            ref_tg_id = int(raw_ref)
+
                 user, _ = await repo.get_or_create_user(
                     telegram_id=tg_user.id,
                     username=tg_user.username,
                     full_name=tg_user.full_name,
+                    referrer_telegram_id=ref_tg_id,
                     language_code=getattr(tg_user, "language_code", "ru"),
                 )
                 if user.is_banned and tg_user.id not in settings.ADMIN_IDS:

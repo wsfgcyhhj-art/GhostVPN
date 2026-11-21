@@ -427,3 +427,106 @@ async def test_xui_client_get_inbound_reality_info_parses_stream_settings() -> N
     assert info.short_id == "a1b2c3d4"
     assert info.fingerprint == "chrome"
     assert info.client_uuids == {"uuid-existing-1"}
+
+
+@pytest.mark.asyncio
+async def test_xui_client_v311_metrics_and_no_relogin_on_404() -> None:
+    calls: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        method = request.method
+        calls.append((method, path))
+
+        if method == "GET" and path == "/secret/":
+            return httpx.Response(
+                200,
+                text='<meta name="csrf-token" content="csrf_metrics">',
+                headers={"content-type": "text/html"},
+            )
+        if method == "POST" and path.endswith("/login"):
+            return httpx.Response(
+                200,
+                json={"success": True, "msg": "ok"},
+                headers={"content-type": "application/json"},
+            )
+        if method == "POST" and path.endswith("/panel/api/clients/onlines"):
+            return httpx.Response(
+                200,
+                json={"success": True, "obj": ["tg_1001", "tg_1002"]},
+                headers={"content-type": "application/json"},
+            )
+        if method == "GET" and path.endswith("/panel/api/server/status"):
+            return httpx.Response(
+                200,
+                json={
+                    "success": True,
+                    "obj": {
+                        "cpu": 12.4,
+                        "mem": {"current": 512 * 1024 * 1024, "total": 1024 * 1024 * 1024},
+                        "xray": {"state": "running"},
+                        "uptime": 7200,
+                    },
+                },
+                headers={"content-type": "application/json"},
+            )
+        if method == "POST" and path.endswith("/panel/api/clients/ips/tg_1001"):
+            return httpx.Response(
+                200,
+                json={"success": True, "obj": ["1.1.1.1", "8.8.8.8"]},
+                headers={"content-type": "application/json"},
+            )
+        if method == "GET" and path.endswith("/panel/api/clients/get/tg_1001"):
+            return httpx.Response(
+                200,
+                json={
+                    "success": True,
+                    "obj": {
+                        "usedTraffic": 2_000_000_000,
+                        "client": {
+                            "enable": True,
+                            "expiryTime": 1850000000000,
+                            "traffic": {"up": 500_000_000, "down": 1_500_000_000},
+                        },
+                    },
+                },
+                headers={"content-type": "application/json"},
+            )
+        return httpx.Response(404, text="404 page not found")
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        xui = XUIClient(
+            host="https://127.0.0.1:2053",
+            web_base_path="/secret",
+            username="admin",
+            password="password",
+            http_client=http_client,
+        )
+
+        status = await xui.get_server_status()
+        assert status.online is True
+        assert status.cpu_percent == 12.4
+        assert status.mem_used_mb == 512.0
+        assert status.mem_total_mb == 1024.0
+        assert status.xray_state == "running"
+        assert status.uptime_seconds == 7200
+        assert status.online_clients_count == 2
+
+        ips = await xui.get_client_ips("tg_1001")
+        assert ips == ["1.1.1.1", "8.8.8.8"]
+
+        traffic = await xui.get_client_traffics("tg_1001")
+        assert traffic is not None
+        assert traffic.up_bytes == 500_000_000
+        assert traffic.down_bytes == 1_500_000_000
+        assert traffic.total_bytes == 2_000_000_000
+        assert traffic.expiry_time_ms == 1850000000000
+
+        # HTTP 404 НЕ должен вызывать повторный логин
+        with pytest.raises(XUIError, match="HTTP 404"):
+            await xui._request("GET", "panel/api/nonexistent/route")
+
+    login_calls = [c for c in calls if c[1].endswith("/login")]
+    assert len(login_calls) == 1
+

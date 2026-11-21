@@ -93,7 +93,7 @@ async def format_subscription_card(
         f"{exp_line}"
         f"• <b>Использовано трафика:</b> <b>{used_gb} ГБ</b> из ∞ (Безлимит)\n"
         f"• <b>Подключено устройств:</b> {devs_value}\n"
-        f"• <b>Сервер {sub.server.name}:</b> <b>{server_status_line}</b>\n"
+        f"• <b>Сервер {sub.server.name if sub.server else settings.XUI_SERVER_NAME}:</b> <b>{server_status_line}</b>\n"
         f"• <b>Внутренний баланс:</b> <b>{balance_str}</b> | Автопродление: <b>{auto_str}</b>\n\n"
         f"📋 <b>Твоя единая ссылка подписки (нажми для копирования):</b>\n"
         f"<code>{sub_url}</code>\n\n"

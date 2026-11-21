@@ -41,6 +41,7 @@ from app.core.security import (
 )
 from app.db.models import (
     PaymentProviderType,
+    Server,
     Transaction,
     TransactionStatus,
     TransactionType,
@@ -633,14 +634,19 @@ async def get_mobile_fragment_subscription(
             detail="Subscription is inactive or user is banned",
         )
 
+    used_traffic_bytes = sub.used_traffic_bytes
+    expires_ts = int(sub.expires_at.timestamp())
+    if session.in_transaction() and not (session.new or session.dirty or session.deleted):
+        await session.commit()
+
     vpn_service = VPNService(session)
     multi_profile = await vpn_service.fetch_live_mobile_profile(sub)
 
     common_headers = {
         "Profile-Title": "GhostFaceVPN",
         "Subscription-Userinfo": (
-            f"upload=0; download={sub.used_traffic_bytes}; total=0; "
-            f"expire={int(sub.expires_at.timestamp())}"
+            f"upload=0; download={used_traffic_bytes}; total=0; "
+            f"expire={expires_ts}"
         ),
         "X-Routing-Policy": "ads=block;ru=direct;default=proxy",
     }
